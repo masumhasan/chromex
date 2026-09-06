@@ -1,0 +1,36 @@
+{
+    "manifest_version": 3,
+    "name": "Ai Chat Automation (Grok Update)",
+    "version": "5.0",
+    "description": "AI chat bot",
+    "permissions": [
+        "storage",
+        "scripting",
+        "tabs",
+        "activeTab",
+        "webRequest"
+   
+    ],
+    "host_permissions": [
+        "https://chat.freedomgpt.com/*",
+        "https://agents.moderationinterface.com/*"
+    ],
+    "background": {
+        "service_worker": "background.js",
+        "type": "module"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "content.js"
+            ],
+            "run_at": "document_idle"
+        }
+    ],
+    "action": {
+        "default_popup": "index.html"
+    }
+}
