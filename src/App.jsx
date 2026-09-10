@@ -1,7 +1,6 @@
 // App.jsx
 import {
   memo,
-  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -10,6 +9,7 @@ import {
 } from "react";
 import toast, { Toaster } from "react-hot-toast";
 import { openDB } from "idb";
+import { delta, pctChange } from "./promptPacking.js";
 
 // --- Inline DB Logic ---
 const DB_NAME = "my-extension-db";
@@ -44,6 +44,28 @@ const deleteAllItems = async () => {
   await tx.done;
 };
 // -----------------------
+
+function formatNum(v, decimals = 0) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "—";
+  return decimals > 0 ? n.toFixed(decimals) : String(n);
+}
+
+function formatDeltaCell(beforeVal, afterVal, { money = false } = {}) {
+  const d = delta(beforeVal, afterVal);
+  const p = pctChange(beforeVal, afterVal);
+  if (d == null) return "—";
+  const dText = money
+    ? `${d > 0 ? "+" : ""}${d.toFixed(6)}`
+    : `${d > 0 ? "+" : ""}${Math.round(d)}`;
+  const pText = p == null ? "" : ` (${p > 0 ? "+" : ""}${p.toFixed(1)}%)`;
+  return dText + pText;
+}
+
+function isAfterLower(beforeVal, afterVal) {
+  const d = delta(beforeVal, afterVal);
+  return d != null && d < 0;
+}
 
 const clampInt = (v, fallback, min = 1, max = 5000) => {
   const n = Number(v);
@@ -256,6 +278,10 @@ have a better understanding of context. Be natural, authentic and as human like 
   // Stats + Errors
   const [stats, setStats] = useState(null);
   const [lastError, setLastError] = useState(null);
+  const [promptLedger, setPromptLedger] = useState(null);
+  const [benchmarkBefore, setBenchmarkBefore] = useState(null);
+  const [benchmarkAfter, setBenchmarkAfter] = useState(null);
+  const [historyMaxLines, setHistoryMaxLines] = useState(40);
 
   // History
   const [entries, setEntries] = useState([]);
@@ -265,7 +291,9 @@ have a better understanding of context. Be natural, authentic and as human like 
   const [triggerLearnExamplesLimit, setTriggerLearnExamplesLimit] = useState(2);
 
   // Message length (stored exactly as background expects)
+  // msgLenMode is written on load/save; UI reads uiLenMode
   const [msgLenMode, setMsgLenMode] = useState("range");
+  void msgLenMode;
   const [msgLenFixed, setMsgLenFixed] = useState(120);
   const [msgLenFrom, setMsgLenFrom] = useState(80);
   const [msgLenTo, setMsgLenTo] = useState(150);
@@ -308,6 +336,52 @@ have a better understanding of context. Be natural, authentic and as human like 
       } else resolve(true);
     });
 
+  const buildBenchmarkSnapshot = (label) => ({
+    label,
+    savedAt: new Date().toISOString(),
+    usage: stats || null,
+    ledger: promptLedger || null,
+    settings: {
+      historyMaxLines,
+      learnExamplesLimit,
+      triggerLearnExamplesLimit,
+      openaiModel,
+      msgLenMode: uiLenMode === "variation" ? "range" : uiLenMode,
+      msgVarEnabled: uiLenMode === "variation",
+    },
+  });
+
+  const persistBenchmark = async (key, snapshot) => {
+    await chromeSet({ [key]: snapshot });
+    await setItem(key, snapshot);
+  };
+
+  const saveBenchmarkBefore = async () => {
+    const snapshot = buildBenchmarkSnapshot("before");
+    await persistBenchmark("benchmarkBefore", snapshot);
+    setBenchmarkBefore(snapshot);
+    toast.success("Before baseline saved");
+  };
+
+  const saveBenchmarkAfter = async () => {
+    const snapshot = buildBenchmarkSnapshot("after");
+    await persistBenchmark("benchmarkAfter", snapshot);
+    setBenchmarkAfter(snapshot);
+    toast.success("After snapshot saved");
+  };
+
+  const clearBenchmarkAfter = async () => {
+    await persistBenchmark("benchmarkAfter", null);
+    setBenchmarkAfter(null);
+    toast.success("After snapshot cleared");
+  };
+
+  const resetBenchmarkBefore = async () => {
+    await persistBenchmark("benchmarkBefore", null);
+    setBenchmarkBefore(null);
+    toast.success("Before baseline reset");
+  };
+
   // Fixed autoGrow to prevent layout thrashing
   const autoGrow = (el) => {
     if (!el) return;
@@ -330,6 +404,10 @@ have a better understanding of context. Be natural, authentic and as human like 
         "openai",
         "grokKey",
         "lastUsageStats",
+        "lastPromptLedger",
+        "benchmarkBefore",
+        "benchmarkAfter",
+        "historyMaxLines",
         "lastError",
         "learnExamplesLimit",
         "triggerLearnExamplesLimit",
@@ -352,6 +430,14 @@ have a better understanding of context. Be natural, authentic and as human like 
         if (result.grokKey != null) setGrokKey(result.grokKey);
 
         if (result.lastUsageStats != null) setStats(result.lastUsageStats);
+        if (result.lastPromptLedger != null)
+          setPromptLedger(result.lastPromptLedger);
+        if (result.benchmarkBefore != null)
+          setBenchmarkBefore(result.benchmarkBefore);
+        if (result.benchmarkAfter != null)
+          setBenchmarkAfter(result.benchmarkAfter);
+        if (result.historyMaxLines != null)
+          setHistoryMaxLines(clampInt(result.historyMaxLines, 40, 0, 5000));
         if (result.lastError != null) setLastError(result.lastError);
 
         if (result.learnExamplesLimit != null) {
@@ -432,6 +518,7 @@ have a better understanding of context. Be natural, authentic and as human like 
 
       learnExamplesLimit,
       triggerLearnExamplesLimit,
+      historyMaxLines: Number(historyMaxLines),
 
       msgLenMode: nextLenMode,
       msgLenFixed: Number(msgLenFixed),
@@ -829,6 +916,29 @@ have a better understanding of context. Be natural, authentic and as human like 
                 </div>
               </Card>
 
+              <Card title="History lines sent to AI">
+                <div className="flex flex-col gap-2">
+                  <Select
+                    value={historyMaxLines}
+                    onChange={(e) => {
+                      const val = clampInt(e.target.value, 40, 0, 5000);
+                      setHistoryMaxLines(val);
+                      chromeSet({ historyMaxLines: val });
+                    }}
+                  >
+                    <option value={0}>All (old behavior)</option>
+                    <option value={20}>20</option>
+                    <option value={40}>40 (recommended)</option>
+                    <option value={60}>60</option>
+                    <option value={80}>80</option>
+                  </Select>
+                  <p className="text-xs text-gray-500">
+                    All = old behavior. 40 is recommended for long chats.
+                    Personals still provide long-term facts.
+                  </p>
+                </div>
+              </Card>
+
               <Card title="Learn Examples">
                 <div className="flex flex-col gap-3">
                   <div>
@@ -903,6 +1013,239 @@ have a better understanding of context. Be natural, authentic and as human like 
                   </div>
                 </div>
               </div>
+            </Card>
+
+            <Card title="Before / after benchmark">
+              <p className="text-xs text-gray-500 mb-3">
+                Generate once on a long chat, Save Before. After packing tasks,
+                generate on the same kind of chat, Save After.
+              </p>
+              <div className="flex flex-wrap gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={saveBenchmarkBefore}
+                  className="px-3 py-2 rounded-xl bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700"
+                >
+                  Save as Before (baseline)
+                </button>
+                <button
+                  type="button"
+                  onClick={saveBenchmarkAfter}
+                  className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700"
+                >
+                  Save as After (updated)
+                </button>
+                <button
+                  type="button"
+                  onClick={clearBenchmarkAfter}
+                  className="px-3 py-2 rounded-xl bg-white border border-gray-200 text-gray-700 text-xs font-semibold hover:bg-gray-50"
+                >
+                  Clear After
+                </button>
+                <button
+                  type="button"
+                  onClick={resetBenchmarkBefore}
+                  className="px-3 py-2 rounded-xl bg-white border border-gray-200 text-gray-700 text-xs font-semibold hover:bg-gray-50"
+                >
+                  Reset Before
+                </button>
+              </div>
+
+              {benchmarkBefore && benchmarkAfter ? (
+                <div className="overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-gray-500">
+                        <th className="py-1 pr-2 font-semibold">Metric</th>
+                        <th className="py-1 pr-2 font-semibold">Before</th>
+                        <th className="py-1 pr-2 font-semibold">After</th>
+                        <th className="py-1 font-semibold">Delta</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        {
+                          label: "Input tokens (API)",
+                          before: benchmarkBefore.usage?.promptTokens,
+                          after: benchmarkAfter.usage?.promptTokens,
+                          highlight: true,
+                        },
+                        {
+                          label: "Output tokens",
+                          before: benchmarkBefore.usage?.completionTokens,
+                          after: benchmarkAfter.usage?.completionTokens,
+                        },
+                        {
+                          label: "Total tokens",
+                          before: benchmarkBefore.usage?.totalTokens,
+                          after: benchmarkAfter.usage?.totalTokens,
+                        },
+                        {
+                          label: "Cost $",
+                          before: benchmarkBefore.usage?.cost,
+                          after: benchmarkAfter.usage?.cost,
+                          money: true,
+                          highlight: true,
+                        },
+                        {
+                          label: "History lines sent",
+                          before: benchmarkBefore.ledger?.historyLineCount,
+                          after: benchmarkAfter.ledger?.historyLineCount,
+                        },
+                        {
+                          label: "History chars",
+                          before:
+                            benchmarkBefore.ledger?.conversationHistory?.chars,
+                          after:
+                            benchmarkAfter.ledger?.conversationHistory?.chars,
+                        },
+                        {
+                          label: "History approx tokens",
+                          before:
+                            benchmarkBefore.ledger?.conversationHistory
+                              ?.approxTokens,
+                          after:
+                            benchmarkAfter.ledger?.conversationHistory
+                              ?.approxTokens,
+                        },
+                        {
+                          label: "Final system chars",
+                          before:
+                            benchmarkBefore.ledger?.finalSystemMessage?.chars,
+                          after:
+                            benchmarkAfter.ledger?.finalSystemMessage?.chars,
+                        },
+                        {
+                          label: "Final system approx tokens",
+                          before:
+                            benchmarkBefore.ledger?.finalSystemMessage
+                              ?.approxTokens,
+                          after:
+                            benchmarkAfter.ledger?.finalSystemMessage
+                              ?.approxTokens,
+                        },
+                      ].map((row) => {
+                        const lower = isAfterLower(row.before, row.after);
+                        return (
+                          <tr key={row.label} className="border-t border-gray-100">
+                            <td className="py-1 pr-2 text-gray-800">
+                              {row.label}
+                            </td>
+                            <td className="py-1 pr-2 font-mono">
+                              {row.money
+                                ? formatNum(row.before, 6)
+                                : formatNum(row.before)}
+                            </td>
+                            <td className="py-1 pr-2 font-mono">
+                              {row.money
+                                ? formatNum(row.after, 6)
+                                : formatNum(row.after)}
+                            </td>
+                            <td
+                              className={
+                                "py-1 font-mono " +
+                                (row.highlight && lower
+                                  ? "text-emerald-700 font-semibold"
+                                  : "")
+                              }
+                            >
+                              {formatDeltaCell(row.before, row.after, {
+                                money: Boolean(row.money),
+                              })}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      <tr className="border-t border-gray-200">
+                        <td className="py-1 pr-2 text-gray-800">Saved at</td>
+                        <td className="py-1 pr-2">
+                          {benchmarkBefore.savedAt
+                            ? new Date(
+                                benchmarkBefore.savedAt,
+                              ).toLocaleString()
+                            : "—"}
+                        </td>
+                        <td className="py-1 pr-2">
+                          {benchmarkAfter.savedAt
+                            ? new Date(benchmarkAfter.savedAt).toLocaleString()
+                            : "—"}
+                        </td>
+                        <td className="py-1 text-gray-400">—</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  {benchmarkBefore
+                    ? "Before is saved. Generate again later, then Save After."
+                    : "No snapshots yet. Save Before after a long-chat generation."}
+                </div>
+              )}
+            </Card>
+
+            <Card title="Prompt ledger (approx)">
+              {promptLedger ? (
+                <div className="overflow-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-left text-gray-500">
+                        <th className="py-1 pr-2 font-semibold">Section</th>
+                        <th className="py-1 pr-2 font-semibold">Chars</th>
+                        <th className="py-1 font-semibold">Approx tokens</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[
+                        ["system", "System prompt"],
+                        ["messageLength", "Message length"],
+                        ["firstMessage", "First message"],
+                        ["personals", "Personals"],
+                        ["genderPrompt", "Gender / grammar"],
+                        ["conversationHistory", "Conversation history"],
+                        ["examples", "Examples"],
+                        ["suggestMsg", "Suggested flow"],
+                        ["badResponses", "Bad responses"],
+                        ["prevGenText", "Previous AI replies"],
+                        ["datePrompt", "Time context"],
+                        ["triggerPrompt", "Trigger hint"],
+                        ["finalSystemMessage", "Final system (sent)"],
+                      ].map(([key, label]) => {
+                        const row = promptLedger[key];
+                        return (
+                          <tr key={key} className="border-t border-gray-100">
+                            <td className="py-1 pr-2 text-gray-800">{label}</td>
+                            <td className="py-1 pr-2 font-mono">
+                              {row?.chars ?? 0}
+                            </td>
+                            <td className="py-1 font-mono">
+                              {row?.approxTokens ?? 0}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      <tr className="border-t border-gray-200">
+                        <td className="py-1 pr-2 text-gray-800">
+                          History lines
+                        </td>
+                        <td className="py-1 pr-2 font-mono" colSpan={2}>
+                          {promptLedger.historyLineCount ?? 0}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                  {promptLedger.timestamp ? (
+                    <div className="mt-2 text-xs text-gray-500">
+                      {new Date(promptLedger.timestamp).toLocaleString()}
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="text-sm text-gray-500">
+                  No ledger yet. Run Suggest or Auto once to measure the
+                  prompt.
+                </div>
+              )}
             </Card>
           </div>
         ) : (

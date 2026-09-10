@@ -1,6 +1,8 @@
 // ===== content.js (FULL REWRITE) =====
 // Adds: Auto-click "OK and disconnect other tabs" when <app-multiple-tabs-modal> appears.
 
+import { isTriggerCustomerMessage, isTriggerTag } from "./promptPacking.js";
+
 // ----------------------------
 // ✅ Optional: run only on your target sites
 // ----------------------------
@@ -12,7 +14,6 @@ const __ALLOWED_HOSTS__ = new Set([
 if (!__ALLOWED_HOSTS__.has(window.location.hostname)) {
   // Avoid running on random pages since your manifest matches <all_urls>
   // returns to stop execution if not on allowed host
-  // eslint-disable-next-line no-useless-return
   // return; // Commented out to ensure it runs if you are testing on other domains, uncomment in prod.
 }
 
@@ -196,7 +197,7 @@ chrome.runtime.onMessage.addListener(async (message) => {
       suggestionCard.style.color = "red";
       await setToChromeStorage("lastAISuggestion", []);
     } else {
-      await pushToBoundedArray("lastAISuggestion", suggestionText, 120);
+      await pushToBoundedArray("lastAISuggestion", suggestionText, 10);
 
       let suggestArr = (await getArrayFromChromeStorage("suggestions")) || [];
       if (!suggestArr.includes(suggestionText)) {
@@ -249,7 +250,7 @@ chrome.runtime.onMessage.addListener(async (message) => {
     const textBox = document.getElementById(idItems.textBox);
     if (!textBox) return console.error("❌ Textbox not found.");
 
-    if (responseText.length < 70) {
+    if (responseText.length < 70 && !(await skipShortRegenerate())) {
       showBanner("⚠️ Response too short Regenerating...");
       await new Promise((resolve) => setTimeout(resolve, 2000));
       removeBanner();
@@ -319,7 +320,7 @@ chrome.runtime.onMessage.addListener(async (message) => {
 async function insertSuggestionText(text) {
   AiInsert = true;
 
-  if (text.length < 75) {
+  if (text.length < 75 && !(await skipShortRegenerate())) {
     showBanner("⚠️ Response too short Regenerating...");
     await new Promise((resolve) => setTimeout(resolve, 2000));
     removeBanner();
@@ -341,7 +342,7 @@ async function insertAndSendSuggestion(text) {
   AiInsert = true;
 
   let sendButton = document.querySelector('button[type="submit"]');
-  if (text.length < 75) {
+  if (text.length < 75 && !(await skipShortRegenerate())) {
     showBanner("⚠️ Response too short Regenerating...");
     await new Promise((resolve) => setTimeout(resolve, 2000));
     removeBanner();
@@ -680,6 +681,18 @@ function getFromChromeStorage(key) {
   });
 }
 
+async function skipShortRegenerate() {
+  try {
+    const tag = await getFromChromeStorage("selectedTag");
+    if (isTriggerTag(tag)) return true;
+    const cur = await getArrayFromChromeStorage("currentMessage");
+    const latest = cur?.[0]?.content || "";
+    return isTriggerCustomerMessage(latest);
+  } catch {
+    return false;
+  }
+}
+
 function setToChromeStorage(key, value) {
   return new Promise((resolve) => {
     chrome.storage.local.set({ [key]: value }, () => resolve(true));
@@ -777,7 +790,7 @@ function createManualSuggestionUI(mainCard) {
     if (!latest) return;
 
     const pair = `You: ${typed}, Customer: ${latest}`;
-    await pushToBoundedArray("suggestions", pair, 120);
+    await pushToBoundedArray("suggestions", pair, 10);
   });
 
   const btnReport = document.createElement("button");
@@ -792,7 +805,7 @@ function createManualSuggestionUI(mainCard) {
     if (!textBox || !textBox?.value) return;
 
     const msg = `Customer Message: ${latest}\n Bad Response:${lastAI},Good Response:${textBox.value} `;
-    await pushToBoundedArray("badResponses", msg, 120);
+    await pushToBoundedArray("badResponses", msg, 10);
   });
 
   wrap.appendChild(input);

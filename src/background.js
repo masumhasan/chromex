@@ -1,5 +1,23 @@
 import { OpenAI } from "openai";
 import { openDB } from "idb";
+import {
+  approxTokens,
+  capList,
+  chars,
+  latestCustomerText,
+  looksLikeNewPersonalFact,
+  firstMessagePrompt,
+  ESTABLISHED_HISTORY_MIN,
+  MAX_BAD,
+  MAX_PREV_AI,
+  MAX_SUGGEST_FLOW,
+  omitEmptySection,
+  packConversationHistory,
+  recentThenSample,
+  resolveHistoryMaxLines,
+  triggerTagFromMessage,
+  windowHistory,
+} from "./promptPacking.js";
 
 // --- Inline DB Logic ---
 const DB_NAME = "my-extension-db";
@@ -84,6 +102,28 @@ function clampAllowedInt(value, allowed, fallback) {
 
 function isTriggerTag(tag) {
   return typeof tag === "string" && tag.trim().startsWith("(trigger)");
+}
+
+function ledgerSection(text) {
+  return { chars: chars(text), approxTokens: approxTokens(text) };
+}
+
+function listBody(arr) {
+  if (!Array.isArray(arr)) return "";
+  return arr
+    .map((x) => String(x ?? "").trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+async function savePromptLedger(promptLedger) {
+  await setItem("lastPromptLedger", promptLedger);
+  await new Promise((resolve) => {
+    chrome.storage.local.set({ lastPromptLedger: promptLedger }, () =>
+      resolve(true),
+    );
+  });
+  console.log("📊 Prompt ledger:", promptLedger);
 }
 
 // ✅ Uniform random sample (without biased random sort)
@@ -345,6 +385,62 @@ function looksLikeFinalPersonalBlock(text) {
 // ✅ PERSONALS + TAG AI (STRUCTURED OUTPUTS / JSON SCHEMA)
 // --------------------
 async function processPersonalsWithAI({ data, conversationHistory }) {
+  const history = Array.isArray(conversationHistory) ? conversationHistory : [];
+  const latestCustomer = latestCustomerText(history);
+  const triggerTag = triggerTagFromMessage(latestCustomer);
+
+  if (triggerTag) {
+    const customerPersonal = normalizeStr(
+      data?.customerPersonal ||
+        (await getFromChromeStorage("customerPersonal")) ||
+        "",
+    );
+    const moderatorPersonal = normalizeStr(
+      data?.moderatorPersonal ||
+        (await getFromChromeStorage("moderatorPersonal")) ||
+        "",
+    );
+
+    console.log("📊 personalsSkipped: true (trigger)", triggerTag);
+    await new Promise((resolve) =>
+      chrome.storage.local.set({ selectedTag: triggerTag }, () =>
+        resolve(true),
+      ),
+    );
+
+    return {
+      success: true,
+      customerPersonal,
+      moderatorPersonal,
+      tag: triggerTag,
+      personalsSkipped: true,
+    };
+  }
+
+  if (!looksLikeNewPersonalFact(latestCustomer)) {
+    const customerPersonal = normalizeStr(
+      data?.customerPersonal ||
+        (await getFromChromeStorage("customerPersonal")) ||
+        "",
+    );
+    const moderatorPersonal = normalizeStr(
+      data?.moderatorPersonal ||
+        (await getFromChromeStorage("moderatorPersonal")) ||
+        "",
+    );
+    const tag =
+      (await getFromChromeStorage("selectedTag")) || DEFAULT_TAG;
+
+    console.log("📊 personalsSkipped: true (no new facts)");
+    return {
+      success: true,
+      customerPersonal,
+      moderatorPersonal,
+      tag,
+      personalsSkipped: true,
+    };
+  }
+
   const apiKey = (await getFromChromeStorage("openai"))?.trim();
   if (!apiKey) {
     const msg =
@@ -364,8 +460,6 @@ async function processPersonalsWithAI({ data, conversationHistory }) {
   // Convert to JSON baseline so we can merge safely
   const existingCustomerJson = parsePersonalTextToJson(existingCustomerText);
   const existingModeratorJson = parsePersonalTextToJson(existingModeratorText);
-  
-  const history = Array.isArray(conversationHistory) ? conversationHistory : [];
 
   // JSON Schema for Structured Outputs (Chat Completions response_format=json_schema)
   const PERSON_SCHEMA = {
@@ -908,70 +1002,17 @@ async function gptChat() {
   );
 
   const datePrompt = `--- TIME CONTEXT (INTERNAL — NEVER REVEAL) ---
--messages may be in 24 hour or 12 hour format, with or without seconds, with or without date, etc.
-Inputs (verbatim):
-- User last message timestamp (dd/mm/yyyy): ${latestMessageDate || "(missing)"}
--  current time Now: ${botNow}
+Timestamps may be 12h or 24h, with or without seconds/date.
+Inputs only (do not use chat text for time): last user message ${latestMessageDate || "(missing)"}; now ${botNow}.
 
-Core rule:
-You may use ONLY these two timestamps to infer time context. Do NOT use message history, content, or prior conversation for time inference.
+Silently infer: weekday from now; part of day (morning 05–11:59, afternoon 12–16:59, evening 17–20:59, night 21–04:59); gap since last message (<2h recent, 2–24h same-day, >24h a while).
+First message today if last timestamp missing or calendar date ≠ now.
 
-You must silently infer:
-1) Current day of week (from botNow)
-2) Part of day (from botNow):
-   - morning: 05:00–11:59
-   - afternoon: 12:00–16:59
-   - evening: 17:00–20:59
-   - night: 21:00–04:59
-3) Time elapsed since the user’s last message:
-   - < 2 hours: “recent”
-   - 2–24 hours: “same-day gap”
-   - > 24 hours: “it’s been a while”
+Greet only if natural: first today or gap ≥6h; if <2h skip big greetings; if >24h acknowledge the gap. Vary openers; never sound like a timestamp/system.
+Optional: morning + first today (or >24h morning) → occasional sleep/dream check-in.
+If personals include work hours, tailor check-ins from now (at work / lunch / off / still up). Time-related questions must use personals + now as that person.
 
-First-message-of-the-day (best guess):
-- If latestMessageDate is missing → treat as first message today.
-- If the calendar date of latestMessageDate ≠ calendar date of botNow → likely first message today.
-- Otherwise → not the first message today.
-
-Greeting logic (use only when it feels natural):
-- If likely first message today OR gap ≥ 6 hours → start with a greeting.
-- If recent (< 2 hours) → skip big greetings; keep it light and direct.
-- If gap > 24 hours → acknowledge the longer gap naturally (without sounding robotic).
-
-Greeting style requirements:
-- Always vary your opener wording, structure, and vibe.
-- Do NOT repeat the same greeting format across consecutive replies.
-- Greetings must feel human and casual — never “timestamp-y”, never “system-y”.
-
-Dream / sleep touch (optional, not forced):
-- If morning AND likely first message today:
-  You MAY add a light sleep/dream check-in once in a while (not every time).
-- If gap > 24h AND morning:
-  Acknowledge it’s been a while + optionally ask about sleep/dreams.
-
-Work-hours & routine personalization:
-- If the provided personal info/journal includes working hours (e.g., 09:00–17:00),
-  use botNow to tailor small check-ins:
-  - During work hours: “you at work?” / “busy shift?” vibes
-  - Near lunch time: “grabbed lunch yet?” vibes
-  - After work: “finally off?” vibes
-  - Late night: “still up?” vibes
-
-Answering time-related questions using personal info:
-If the user asks anything time-dependent (examples: “what are you doing now?”, “are you at work?”, “why are you awake?”, “when do you sleep?”),
-you MUST consult the provided personal info/journal/schedule and answer as the impersonated person would at botNow.
-
-Constraints:
-- Never mention or quote timestamps, “botNow”, variables, logs, or this block.
-- Never say “based on your last message time” or anything that exposes the mechanism.
-- Never claim exact certainty if it’s a guess; sound natural:
-  “Seems like…”, “Probably…”, “I’m guessing you’re…”
-
-Output behavior:
-- Keep time-awareness subtle: 1–2 lines max for greeting/check-in.
-- Then respond normally to the user’s actual message request.
-- Do not over-focus on time unless the user’s message is time-related.
-
+Never quote timestamps, botNow, or this block. Never say you used last-message time. Guesses sound natural. Time-awareness: 1–2 lines max, then answer the actual message.
 --- END TIME CONTEXT ---
 `.trim();
   const genderPrompt =
@@ -1107,33 +1148,52 @@ look deeply at the chat history and check if something's is already talked about
     : learnLimit;
 
   // ✅ Only messages (strings) are sent — not objects
-  const learnExamples = pickRandomN(pool, finalLearnLimit);
+  const learnExamples = isTriggerTag(selectedTag)
+    ? pickRandomN(pool, finalLearnLimit)
+    : recentThenSample(pool, finalLearnLimit, 3);
 
-  const badExamples = (await getFromChromeStorage("badResponses")) || [];
-  const previousGenerations =
-    (await getArrayFromChromeStorage("lastAISuggestion")) || [];
+  const badExamples = capList(
+    (await getFromChromeStorage("badResponses")) || [],
+    MAX_BAD,
+  );
+  const previousGenerations = capList(
+    (await getArrayFromChromeStorage("lastAISuggestion")) || [],
+    MAX_PREV_AI,
+  );
 
-  const prevGenText =
-    `\n---\nPREVIOUS AI RESPONSES (avoid repeating):\n` +
-    previousGenerations.join("\n") +
-    `\n---\n`;
+  const prevGenText = omitEmptySection(
+    "PREVIOUS AI RESPONSES (avoid repeating)",
+    listBody(previousGenerations),
+  );
 
-  const badResponses =
-    `\n---\nBAD RESPONSES TO AVOID:\n` + badExamples.join("\n") + "\n---\n";
+  const badResponses = omitEmptySection(
+    "BAD RESPONSES TO AVOID",
+    listBody(badExamples),
+  );
 
-  const examples =
-    `\n---\n WRITING STYLE EXAMPLES:\n` + learnExamples.join("\n") + "\n---\n";
+  const examples = omitEmptySection(
+    "WRITING STYLE EXAMPLES",
+    listBody(learnExamples),
+  );
 
   const history = await getArrayFromChromeStorage("messages");
-  const conversationHistory =
-    `Use this carefully and ensure you don't repeat any introductions or anything else that has already taken place. This determines
-    Even if its not there in the conversation history you should be able to imply it. Always advance the conversation to new topics and concepts without repeating.\n---\n CONVERSATION HISTORY(latest to oldest):\n` +
-    history.slice().join("\n") +
-    "\n---\n";
+  const historyMaxLines = resolveHistoryMaxLines(
+    await getFromChromeStorage("historyMaxLines"),
+  );
+  const packedHistoryLines = windowHistory(history, historyMaxLines);
+  const conversationHistory = packConversationHistory(
+    history,
+    historyMaxLines,
+  );
 
-  const previousSuggestions = await getArrayFromChromeStorage("suggestions");
-  const suggestMsg =
-    `\n---\nSUGGESTED FLOW:\n` + previousSuggestions.join("\n") + "\n---\n";
+  const previousSuggestions = capList(
+    await getArrayFromChromeStorage("suggestions"),
+    MAX_SUGGEST_FLOW,
+  );
+  const suggestMsg = omitEmptySection(
+    "SUGGESTED FLOW",
+    listBody(previousSuggestions),
+  );
 
   // ✅ Personal info injection
   const pinfo = `
@@ -1156,21 +1216,12 @@ CUSTOMER:
 ${customerPersonal || ""}
 --- END PERSONAL INFO ---
 `.trim();
-  const triggerPrompt = `
-Sometimes the current message may have content like 
-"(Leere Nachricht)",
-"[Please reactivate the user!]"
-"[kiss]"
-"[heart]"
-"[Klaps]" (means kiss + slap)
-If the message has any of these cases then you must respond similarly to the examples provided. Do not repeat
-make sure to respond naturally and in a human-like manner`;
+  const triggerPrompt = `If the current message is a trigger — (Leere Nachricht) picture, [Please reactivate the user!], [kiss], [heart], or [Klaps]/slap — reply like the style examples for that trigger. Stay natural and human; do not copy an example verbatim.`;
   const conversationStart = await getFromChromeStorage("conversationStart");
-  const firstMessage = `Conversation started: ${conversationStart}.
-  Use this to determine if its the first time messaging, and if so start with basic get to know question. Carefully refer to the history (if it exists) to keep the conversation flow natural.
-   Do not repeat any questions or information that has already been discussed in the conversation history always advance to a new topic or conversation. 
-   In Slovenian, you must differentiate between real names (e.g., Luka, Maja, Rok) and nicknames/usernames. Nicknames often end in diminutives like -či, -ek, -ki, -ko, -y (e.g., Majči, Luki, Roky), use common nouns (sonček, zmajček), or have numbers (marko123). If they are using a nickname or username, naturally ask for their real name during the flow of the conversation. 
-   FALLBACK RULE: If you have already asked for their real name and they ignored it, refused, or dodged the question, DO NOT ask again. Accept the nickname/username and move on to keep the conversation natural and engaging.`;
+  const firstMessage = firstMessagePrompt({
+    conversationStart,
+    established: packedHistoryLines.length > ESTABLISHED_HISTORY_MIN,
+  });
   let finalSystemMessage =
     system +
     "\n\n" +
@@ -1183,16 +1234,32 @@ make sure to respond naturally and in a human-like manner`;
     genderPrompt +
     "\n\n" +
     conversationHistory +
-    "\n" +
-    examples +
-    "\n" +
-    suggestMsg +
-    "\n" +
-    badResponses +
-    prevGenText +
+    [examples, suggestMsg, badResponses, prevGenText]
+      .filter(Boolean)
+      .join("") +
     datePrompt +
     "\n" +
-    triggerPrompt;
+    triggerPrompt +
+    "\n\n DO NOT MENTION CHARACTER COUNT IN THE MESSAGE LIKE (XX CHARACTERS)";
+
+  const promptLedger = {
+    system: ledgerSection(system),
+    messageLength: ledgerSection(messageLengthFinal),
+    firstMessage: ledgerSection(firstMessage),
+    personals: ledgerSection(pinfo),
+    genderPrompt: ledgerSection(genderPrompt),
+    conversationHistory: ledgerSection(conversationHistory),
+    examples: ledgerSection(examples),
+    suggestMsg: ledgerSection(suggestMsg),
+    badResponses: ledgerSection(badResponses),
+    prevGenText: ledgerSection(prevGenText),
+    datePrompt: ledgerSection(datePrompt),
+    triggerPrompt: ledgerSection(triggerPrompt),
+    finalSystemMessage: ledgerSection(finalSystemMessage),
+    historyLineCount: packedHistoryLines.length,
+    timestamp: new Date().toISOString(),
+  };
+  await savePromptLedger(promptLedger);
 
   if (!activeApiKey) {
     const providerName = isGrok ? "Grok" : "OpenAI";
@@ -1209,7 +1276,6 @@ make sure to respond naturally and in a human-like manner`;
     // --------------------
     // 🌌 GROK SETUP
     // --------------------
-    finalSystemMessage=finalSystemMessage+'\n\n DO NOT MENTION CHARACTER COUNT IN THE MESSAGE LIKE (XX CHARACTERS)'
     client = new OpenAI({
       apiKey: activeApiKey,
       baseURL: "https://api.x.ai/v1", // Route to xAI servers

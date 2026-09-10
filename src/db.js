@@ -51,7 +51,6 @@ export const deleteItem = async (key) => {
   return db.delete(STORE_NAME, key);
 };
 export const deleteItemByIndex = async (key, index) => {
-  const db = await initDB();
   const data = (await getItem(key)) || [];
   data.splice(index, 1);
   return setItem(key, data);
