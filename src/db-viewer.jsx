@@ -79,6 +79,46 @@ function normalizeTrainingItem(item) {
   return { message, tag };
 }
 
+/**
+ * First-version export was:
+ * { meta, training: string[], badResponses: string[], suggestions: string[] }
+ * Current export is a raw array of { message, tag }.
+ */
+function extractImportPayload(parsed) {
+  if (Array.isArray(parsed)) {
+    return { training: parsed, badResponses: null, suggestions: null };
+  }
+
+  if (parsed && typeof parsed === "object") {
+    const training = Array.isArray(parsed.training) ? parsed.training : null;
+    if (!training) return null;
+    return {
+      training,
+      badResponses: Array.isArray(parsed.badResponses)
+        ? parsed.badResponses
+        : null,
+      suggestions: Array.isArray(parsed.suggestions)
+        ? parsed.suggestions
+        : null,
+    };
+  }
+
+  return null;
+}
+
+function uniqueStrings(arr) {
+  const out = [];
+  const seen = new Set();
+  for (const item of arr) {
+    if (typeof item !== "string") continue;
+    const s = item.trim();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  return out;
+}
+
 export default function DBViewer() {
   const fileRef = useRef(null);
 
@@ -188,22 +228,84 @@ export default function DBViewer() {
       return;
     }
 
-    if (!Array.isArray(parsed)) {
-      alert("Training JSON must be an array of {message, tag} objects.");
+    const payload = extractImportPayload(parsed);
+    if (!payload) {
+      alert(
+        "Unrecognized training file. Use a v1 export ({ training: [...] }) or an array of {message, tag} / strings."
+      );
       return;
     }
 
-    const incoming = parsed.map(normalizeTrainingItem).filter(Boolean);
+    const incoming = payload.training
+      .map(normalizeTrainingItem)
+      .filter(Boolean);
+
+    if (incoming.length === 0) {
+      alert("No training messages found in this JSON.");
+      return;
+    }
 
     const current = normalizeArray(data.training)
       .map(normalizeTrainingItem)
       .filter(Boolean);
 
-    const next = importMode === "replace" ? incoming : current.concat(incoming);
+    const next =
+      importMode === "replace"
+        ? incoming
+        : (() => {
+            const seen = new Set(
+              current.map((x) => `${x.tag}\n${x.message}`)
+            );
+            const out = current.slice();
+            for (const item of incoming) {
+              const k = `${item.tag}\n${item.message}`;
+              if (seen.has(k)) continue;
+              seen.add(k);
+              out.push(item);
+            }
+            return out;
+          })();
 
-    // Store exactly in required format {message, tag}
     await persistCategory("training", next);
+
+    if (payload.badResponses) {
+      const incomingBad = uniqueStrings(payload.badResponses);
+      const currentBad = uniqueStrings(normalizeArray(data.badResponses));
+      const nextBad =
+        importMode === "replace"
+          ? incomingBad
+          : uniqueStrings(currentBad.concat(incomingBad));
+      await persistCategory("badResponses", nextBad);
+    }
+
+    if (payload.suggestions) {
+      const incomingSug = uniqueStrings(payload.suggestions);
+      const currentSug = uniqueStrings(
+        await new Promise((resolve) => {
+          chrome.storage.local.get(["suggestions"], (res) =>
+            resolve(normalizeArray(res?.suggestions))
+          );
+        })
+      );
+      const nextSug =
+        importMode === "replace"
+          ? incomingSug
+          : uniqueStrings(currentSug.concat(incomingSug));
+      await setToStorage("suggestions", nextSug);
+    }
+
     setActive("training");
+    if (fileRef.current) fileRef.current.value = "";
+
+    const extras = [];
+    if (payload.badResponses) extras.push(`${uniqueStrings(payload.badResponses).length} bad responses`);
+    if (payload.suggestions && payload.suggestions.length)
+      extras.push(`${uniqueStrings(payload.suggestions).length} suggestions`);
+    alert(
+      `Imported ${incoming.length} training examples` +
+        (extras.length ? ` plus ${extras.join(" and ")}` : "") +
+        "."
+    );
   };
 
   return (
@@ -273,8 +375,9 @@ export default function DBViewer() {
           </select>
 
           <p className="text-xs text-gray-500">
-            Suggestions are hidden here. Only training supports JSON
-            import/export.
+            Accepts the first-version export ({"{ meta, training, badResponses }"})
+            and the newer array of {"{ message, tag }"}. Old string examples
+            are tagged flirty until you retag them.
           </p>
         </div>
 
@@ -364,7 +467,8 @@ export default function DBViewer() {
         </div>
 
         <p className="mt-3 text-xs text-gray-500">
-          Training JSON format: {"{ message: string, tag: one-of TAGS }"}
+          Training JSON format: v1 {"{ training: string[] }"} or{" "}
+          {"[{ message, tag }]"}
         </p>
       </div>
     </div>

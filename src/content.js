@@ -388,105 +388,143 @@ function removeBanner() {
   if (banner) banner.remove();
 }
 
+function findTextBox() {
+  return (
+    document.getElementById(idItems.textBox) ||
+    document.querySelector("textarea#chat-windows-message-textarea")
+  );
+}
+
+function findComposerRoot(textBox) {
+  if (!textBox) return null;
+  return (
+    textBox.closest("." + classItems.mainCard) ||
+    textBox.closest(".card") ||
+    textBox.closest("form") ||
+    textBox.parentElement
+  );
+}
+
+async function mountOverlay(textBox) {
+  const mainCard = findComposerRoot(textBox);
+  if (!mainCard) return false;
+
+  ensureStylesOnce();
+
+  if (!document.getElementById("mode-switcher")) {
+    const modeSwitcher = document.createElement("div");
+    modeSwitcher.id = "mode-switcher";
+    modeSwitcher.style.marginTop = "10px";
+    modeSwitcher.style.display = "flex";
+    modeSwitcher.style.alignItems = "center";
+    modeSwitcher.style.gap = "6px";
+    modeSwitcher.style.flexWrap = "wrap";
+
+    const learnBtn = document.createElement("button");
+    learnBtn.id = "mode-learn";
+    learnBtn.textContent = "Learn";
+    learnBtn.className = "mode-btn active";
+
+    const tagSelect = document.createElement("select");
+    tagSelect.id = "learn-tag-select";
+    tagSelect.className = "tag-select";
+
+    TAGS.forEach((t) => {
+      const opt = document.createElement("option");
+      opt.value = t;
+      opt.textContent = t;
+      tagSelect.appendChild(opt);
+    });
+
+    const saved = await getFromChromeStorage("selectedTag");
+    const initialTag = TAGS.includes(saved) ? saved : DEFAULT_TAG;
+    tagSelect.value = initialTag;
+    await setToChromeStorage("selectedTag", initialTag);
+
+    tagSelect.addEventListener("change", async (e) => {
+      await setToChromeStorage("selectedTag", e.target.value);
+    });
+
+    const suggestBtn = document.createElement("button");
+    suggestBtn.id = "mode-suggest";
+    suggestBtn.textContent = "Suggest";
+    suggestBtn.className = "mode-btn";
+
+    const autoBtn = document.createElement("button");
+    autoBtn.id = "mode-auto";
+    autoBtn.textContent = "Auto";
+    autoBtn.className = "mode-btn";
+
+    modeSwitcher.appendChild(learnBtn);
+    modeSwitcher.appendChild(tagSelect);
+    modeSwitcher.appendChild(suggestBtn);
+    modeSwitcher.appendChild(autoBtn);
+    mainCard.appendChild(modeSwitcher);
+
+    if (mode === 2) suggestBtn.classList.add("active");
+    if (mode === 3) autoBtn.classList.add("active");
+
+    const buttons = { 2: suggestBtn, 3: autoBtn };
+    Object.entries(buttons).forEach(([key, btn]) => {
+      btn.addEventListener("click", () => {
+        Object.values(buttons).forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        mode = parseInt(key);
+        if (mode === 2) suggestMode();
+        if (mode === 3) autoMode();
+      });
+    });
+
+    learnBtn.addEventListener("click", () => learnMode());
+  }
+
+  if (!document.getElementById("manual-suggestion-wrapper")) {
+    createManualSuggestionUI(mainCard);
+  }
+
+  return true;
+}
+
+let executeInFlight = false;
+
 async function executeScript() {
-  let textBox;
+  if (executeInFlight) return;
+  executeInFlight = true;
   dataGrabbed = false;
 
-  while (!textBox) {
-    textBox = document.getElementById(idItems.textBox);
-    await new Promise((r) => setTimeout(r, 500));
-  }
+  try {
+    let textBox;
+    while (!textBox) {
+      textBox = findTextBox();
+      await new Promise((r) => setTimeout(r, 500));
+    }
 
-  while (textBox?.disabled) {
-    await new Promise((r) => setTimeout(r, 500));
-    textBox = document.getElementById(idItems.textBox);
-  }
+    while (textBox?.disabled) {
+      await new Promise((r) => setTimeout(r, 500));
+      textBox = findTextBox();
+    }
 
-  AiInsert = false;
-  showBanner("Collecting messages, please wait...");
-  await grabData(30);
-  removeBanner();
-  await new Promise((r) => setTimeout(r, 1200));
+    AiInsert = false;
+    await mountOverlay(textBox);
 
-  const mainCard = textBox?.closest("." + classItems.mainCard);
-
-  if (mainCard) {
-    ensureStylesOnce();
+    showBanner("Collecting messages, please wait...");
+    try {
+      await grabData(30);
+    } catch (err) {
+      console.error("❌ grabData failed (overlay still shown):", err);
+    }
+    removeBanner();
+    await new Promise((r) => setTimeout(r, 1200));
 
     if (!document.getElementById("mode-switcher")) {
-      const modeSwitcher = document.createElement("div");
-      modeSwitcher.id = "mode-switcher";
-      modeSwitcher.style.marginTop = "10px";
-      modeSwitcher.style.display = "flex";
-      modeSwitcher.style.alignItems = "center";
-      modeSwitcher.style.gap = "6px";
-      modeSwitcher.style.flexWrap = "wrap";
-
-      const learnBtn = document.createElement("button");
-      learnBtn.id = "mode-learn";
-      learnBtn.textContent = "Learn";
-      learnBtn.className = "mode-btn active";
-
-      const tagSelect = document.createElement("select");
-      tagSelect.id = "learn-tag-select";
-      tagSelect.className = "tag-select";
-
-      TAGS.forEach((t) => {
-        const opt = document.createElement("option");
-        opt.value = t;
-        opt.textContent = t;
-        tagSelect.appendChild(opt);
-      });
-
-      const saved = await getFromChromeStorage("selectedTag");
-      const initialTag = TAGS.includes(saved) ? saved : DEFAULT_TAG;
-      tagSelect.value = initialTag;
-      await setToChromeStorage("selectedTag", initialTag);
-
-      tagSelect.addEventListener("change", async (e) => {
-        await setToChromeStorage("selectedTag", e.target.value);
-      });
-
-      const suggestBtn = document.createElement("button");
-      suggestBtn.id = "mode-suggest";
-      suggestBtn.textContent = "Suggest";
-      suggestBtn.className = "mode-btn";
-
-      const autoBtn = document.createElement("button");
-      autoBtn.id = "mode-auto";
-      autoBtn.textContent = "Auto";
-      autoBtn.className = "mode-btn";
-
-      modeSwitcher.appendChild(learnBtn);
-      modeSwitcher.appendChild(tagSelect);
-      modeSwitcher.appendChild(suggestBtn);
-      modeSwitcher.appendChild(autoBtn);
-      mainCard.appendChild(modeSwitcher);
-
-      if (mode === 2) suggestBtn.classList.add("active");
-      if (mode === 3) autoBtn.classList.add("active");
-
-      const buttons = { 2: suggestBtn, 3: autoBtn };
-      Object.entries(buttons).forEach(([key, btn]) => {
-        btn.addEventListener("click", () => {
-          Object.values(buttons).forEach((b) => b.classList.remove("active"));
-          btn.classList.add("active");
-          mode = parseInt(key);
-          if (mode === 2) suggestMode();
-          if (mode === 3) autoMode();
-        });
-      });
-
-      learnBtn.addEventListener("click", () => learnMode());
+      await mountOverlay(findTextBox());
     }
 
-    if (!document.getElementById("manual-suggestion-wrapper")) {
-      createManualSuggestionUI(mainCard);
-    }
+    if (mode === 2) suggestMode();
+    else if (mode === 3) autoMode();
+  } finally {
+    executeInFlight = false;
   }
-
-  if (mode === 2) suggestMode();
-  else if (mode === 3) autoMode();
 }
 
 async function autoMode() {
@@ -593,11 +631,11 @@ async function grabData(limit = 4) {
 
   let data = [];
   let currentMessage = [];
-  let latestMessageDate = document.querySelector(
-    "li.ng-star-inserted .timeline-heading"
-  ).innerText;
-    await setToChromeStorage("latestMessageDate", latestMessageDate);
-    await setToChromeStorage("botNow", new Date().toString());
+  let latestMessageDate =
+    document.querySelector("li.ng-star-inserted .timeline-heading")
+      ?.innerText || "";
+  await setToChromeStorage("latestMessageDate", latestMessageDate);
+  await setToChromeStorage("botNow", new Date().toString());
   const timelineItems = document.querySelectorAll("li.ng-star-inserted");
   let latestUser = document
     .querySelector(classItems.userMessage)
@@ -635,9 +673,10 @@ async function grabData(limit = 4) {
     document.getElementById("customer-custom")?.value || "";
   const moderatorPersonal =
     document.getElementById("moderator-custom")?.value || "";
-  const conversationStart = document.querySelector(
-    ".badge.badge-primary.float-right.ng-star-inserted",
-  ).innerText;
+  const conversationStart =
+    document.querySelector(
+      ".badge.badge-primary.float-right.ng-star-inserted",
+    )?.innerText || "";
   await setToChromeStorage("customerPersonal", customerPersonal.trim());
   await setToChromeStorage("moderatorPersonal", moderatorPersonal.trim());
   await setToChromeStorage("conversationStart", conversationStart.trim());
@@ -848,6 +887,21 @@ function escapeHtml(str) {
     .replaceAll(">", "&gt;");
 }
 
+function watchComposerForOverlay() {
+  const tryMount = () => {
+    if (document.getElementById("mode-switcher")) return;
+    if (!findTextBox()) return;
+    executeScript();
+  };
+
+  if (!document.body) return;
+  new MutationObserver(tryMount).observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
+}
+
 // kickoff
 observeSendButton();
+watchComposerForOverlay();
 executeScript();
