@@ -3,8 +3,12 @@ export const MAX_BAD = 3;
 export const MAX_SUGGEST_FLOW = 3;
 export const DEFAULT_HISTORY_LINES = 40;
 
-const HISTORY_WRAPPER_PREFIX = `Use this carefully and ensure you don't repeat any introductions or anything else that has already taken place. This determines
-    Even if its not there in the conversation history you should be able to imply it. Always advance the conversation to new topics and concepts without repeating.\n---\n CONVERSATION HISTORY(latest to oldest):\n`;
+const HISTORY_WRAPPER_PREFIX = `Use this history to understand context, tone, and what has already taken place.
+Never repeat greetings, introductions, topics, or sentence structures that have already occurred.
+Always bring fresh energy, varied sentence openings, and narrative progression.
+---
+CONVERSATION HISTORY (latest to oldest):
+`;
 
 export function chars(str) {
   if (str == null) return 0;
@@ -193,3 +197,147 @@ export function recentThenSample(arr, n, recentWindowMultiplier = 3) {
   if (recent.length < k) return sampleRandomN(arr, k);
   return sampleRandomN(recent, k);
 }
+
+// ----------------------------------------------------
+// 🛑 ANTI-REPETITION & HUMANIZATION UTILITIES
+// ----------------------------------------------------
+
+export function extractRecentYouMessages(history, maxCount = 5) {
+  if (!Array.isArray(history)) return [];
+  const max = Math.max(0, Math.floor(Number(maxCount) || 5));
+  if (max === 0) return [];
+  const youMessages = [];
+  for (const line of history) {
+    const s = String(line ?? "").trim();
+    if (/^You:\s*/i.test(s)) {
+      const text = s.replace(/^You:\s*/i, "").trim();
+      if (text) {
+        youMessages.push(text);
+        if (youMessages.length >= max) break;
+      }
+    }
+  }
+  return youMessages;
+}
+
+export function extractOpeningWords(messages) {
+  if (!Array.isArray(messages)) return [];
+  const words = new Set();
+  for (const msg of messages) {
+    const s = String(msg ?? "").trim();
+    const cleaned = s.replace(/^(?:You|Customer):\s*/i, "").trim();
+    // Match the first word (Unicode letters)
+    const match = cleaned.match(/^[\s"'„“»«([*~_]*([\p{L}]+)/u);
+    if (match && match[1]) {
+      words.add(match[1].toLowerCase());
+    }
+  }
+  return Array.from(words);
+}
+
+export function extractSmileys(messages) {
+  if (!Array.isArray(messages)) return [];
+  const smileys = new Set();
+  const emojiRegex = /\p{Extended_Pictographic}/gu;
+  const asciiSmileyRegex = /(?:[:;=8][-o*']?[)D(/\\pP|3<>]|<3)/g;
+
+  for (const msg of messages) {
+    const s = String(msg ?? "");
+    const emojis = s.match(emojiRegex);
+    if (emojis) {
+      for (const e of emojis) smileys.add(e);
+    }
+    const ascii = s.match(asciiSmileyRegex);
+    if (ascii) {
+      for (const a of ascii) smileys.add(a);
+    }
+  }
+  return Array.from(smileys);
+}
+
+const SLOVENIAN_STOPWORDS = new Set([
+  "tudi", "tako", "kako", "zakaj", "kdaj", "ampak", "toda", "vendar", "zato",
+  "samo", "lahko", "bova", "bomo", "boste", "bodo", "bila", "bilo", "bili",
+  "bile", "imel", "imela", "imeli", "mene", "tebe", "njega", "njo", "nama",
+  "vama", "njima", "meni", "tebi", "njemu", "nam", "vam", "njim", "tega",
+  "temu", "svoj", "svojo", "svoje", "svojih", "nekaj", "nekdo", "vedno",
+  "nikoli", "tukaj", "seveda", "kajne", "kadar", "kjer", "kdor", "nekje",
+  "sem", "si", "je", "sva", "ste", "smo", "bila", "bili", "boste", "bova",
+  "boš", "bom", "bomo", "bodo", "veš", "vem", "veva", "veste", "vemo",
+  "kaj", "kdo", "kateri", "katera", "katero", "tale", "tisto", "tisti",
+  "tista", "res", "prav", "zelo", "bolj", "najbolj", "malo", "precej"
+]);
+
+export function extractRecentKeywords(messages, minLength = 4) {
+  if (!Array.isArray(messages)) return [];
+  const min = Math.max(1, Math.floor(Number(minLength) || 4));
+  const regex = new RegExp(`[\\p{L}]{${min},}`, "gu");
+  const keywords = new Set();
+  for (const msg of messages) {
+    const s = String(msg ?? "").toLowerCase();
+    const words = s.match(regex) || [];
+    for (const w of words) {
+      if (!SLOVENIAN_STOPWORDS.has(w)) {
+        keywords.add(w);
+      }
+    }
+  }
+  return Array.from(keywords).slice(0, 12);
+}
+
+export function buildAntiRepetitionPrompt({
+  recentYouMessages = [],
+  lastAISuggestion = [],
+} = {}) {
+  const combined = [];
+  const seen = new Set();
+  for (const m of [...(recentYouMessages || []), ...(lastAISuggestion || [])]) {
+    const str = String(m ?? "").trim();
+    if (str && !seen.has(str)) {
+      seen.add(str);
+      combined.push(str);
+    }
+  }
+
+  const openers = extractOpeningWords(combined);
+  const smileys = extractSmileys(combined);
+  const keywords = extractRecentKeywords(combined);
+
+  let dynamicRules = "";
+  if (openers.length > 0) {
+    dynamicRules += `- FORBIDDEN OPENING WORDS: Your recent messages started with: [${openers.join(", ")}]. YOU MUST NOT start your next message with any of these words!\n`;
+  }
+  if (smileys.length > 0) {
+    dynamicRules += `- FORBIDDEN SMILEYS: Your recent messages used: ${smileys.join(" ")}. DO NOT reuse any of these smileys in this reply!\n`;
+  }
+  if (keywords.length > 0) {
+    dynamicRules += `- AVOID REPEATING DISTINCTIVE WORDS/VERBS: Recently used: [${keywords.join(", ")}]. Do not repeat these exact words; use fresh synonyms!\n`;
+  }
+
+  return `--- STYLE DIVERSITY & ANTI-REPETITION (CRITICAL HUMANIZATION RULES) ---
+You are chatting as a real, spontaneous human. Real people do not repeat conversational habits, formulas, or sentence openings.
+Strictly adhere to the following rules:
+
+1. ABSOLUTE BAN ON REPETITIVE SENTENCE OPENINGS:
+- NEVER start 2 consecutive messages with the same word or clause pattern!
+- DO NOT start with cliché repetitive openers such as "Ko...", "Ful...", "Kaj če...", "A veš...", "Opa...", "Joj...".
+${dynamicRules ? dynamicRules.trim() + "\n" : ""}- Radically vary how your message begins: start directly with an action verb, a witty observation, a punchy tease, an unexpected exclamation, or a spontaneous short fragment.
+
+2. DIVERSE SENTENCE STRUCTURES (NO FIXED FORMULAS):
+- FORBIDDEN FORMULA: Do NOT repeatedly use "[Subordinate clause with Ko/Če...] + [Action/Desire] + [Smiley]".
+- Radically vary your syntax: use short conversational fragments, direct playful statements, rhetorical questions, or sensual banter. Break predictable cadence.
+
+3. VOCABULARY DIVERSITY & NO SLANG RECYCLING:
+- Do not recycle favorite pet words (e.g., "ful", "porineš", "steče") across consecutive turns.
+- Use natural, varied Slovenian vocabulary and rich synonyms.
+
+4. SMILEY / EMOJI DISCIPLINE:
+- Use at most ONE smiley in a message. In at least 50% of your messages, use ZERO smileys.
+- NEVER use the exact same smiley two turns in a row, and never use more than one smiley in one message.
+
+5. TOPIC & NARRATIVE PROGRESSION:
+- Do not loop the same scenario, compliment, or fantasy with slightly changed words.
+- Advance the interaction: introduce a new detail, respond to an unaddressed aspect of what the customer said, or playfully shift the topic.
+--- END STYLE DIVERSITY & ANTI-REPETITION ---`.trim();
+}
+

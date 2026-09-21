@@ -195,7 +195,6 @@ chrome.runtime.onMessage.addListener(async (message) => {
       suggestionCard.textContent =
         message?.payload?.error || "❌ Failed to get suggestion from AI.";
       suggestionCard.style.color = "red";
-      await setToChromeStorage("lastAISuggestion", []);
     } else {
       await pushToBoundedArray("lastAISuggestion", suggestionText, 10);
 
@@ -246,6 +245,8 @@ chrome.runtime.onMessage.addListener(async (message) => {
 
     const responseText = (message?.payload?.message || "").trim();
     if (!responseText) return console.warn("⚠️ Empty AI response payload.");
+
+    await pushToBoundedArray("lastAISuggestion", responseText, 10);
 
     const textBox = document.getElementById(idItems.textBox);
     if (!textBox) return console.error("❌ Textbox not found.");
