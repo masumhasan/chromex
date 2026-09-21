@@ -1,7 +1,12 @@
 import {
   approxTokens,
+  buildAntiRepetitionPrompt,
   capList,
   delta,
+  extractOpeningWords,
+  extractRecentKeywords,
+  extractRecentYouMessages,
+  extractSmileys,
   isTriggerCustomerMessage,
   MAX_BAD,
   MAX_PREV_AI,
@@ -132,4 +137,63 @@ assert(
 assert(recentThenSample([1, 2, 3], 5, 3).length === 3, "fewer than n uses full pool");
 assert(recentThenSample([], 5, 3).length === 0, "empty pool");
 
+// ----------------------------------------------------
+// 🛑 Anti-repetition & Humanization Tests
+// ----------------------------------------------------
+const mockHistory = [
+  "Customer: Kaj delaš danes?",
+  "You: Ko prideš domov, mi porineš roko pod majico? 😉",
+  "Customer: Haha seveda!",
+  "You: Ful bi te rada videla, da steče najin večer.",
+  "Customer: Tudi jaz.",
+  "You: A veš, da komaj čakam? :P",
+];
+
+const extractedYou = extractRecentYouMessages(mockHistory, 5);
+assert(extractedYou.length === 3, "extractRecentYouMessages finds 3 You lines");
+assert(
+  extractedYou[0] === "Ko prideš domov, mi porineš roko pod majico? 😉",
+  "first You line matches",
+);
+
+const openers = extractOpeningWords(extractedYou);
+assert(openers.includes("ko"), "detects 'ko' opener");
+assert(openers.includes("ful"), "detects 'ful' opener");
+assert(openers.includes("a"), "detects 'a' opener");
+
+const smileys = extractSmileys(extractedYou);
+assert(smileys.includes("😉"), "detects emoji smiley");
+assert(smileys.includes(":P"), "detects ascii smiley");
+
+const keywords = extractRecentKeywords(extractedYou);
+assert(keywords.includes("porineš"), "detects keyword 'porineš'");
+assert(keywords.includes("steče"), "detects keyword 'steče'");
+assert(!keywords.includes("tudi"), "filters Slovenian stopword 'tudi'");
+
+const antiRepPrompt = buildAntiRepetitionPrompt({
+  recentYouMessages: extractedYou,
+  lastAISuggestion: ["Ko sem sama..."],
+});
+assert(
+  antiRepPrompt.includes("FORBIDDEN OPENING WORDS"),
+  "prompt includes forbidden openers",
+);
+assert(
+  antiRepPrompt.includes("ko") && antiRepPrompt.includes("ful"),
+  "prompt lists 'ko' and 'ful' as forbidden openers",
+);
+assert(
+  antiRepPrompt.includes("😉"),
+  "prompt lists recently used smiley as forbidden",
+);
+assert(
+  antiRepPrompt.includes("porineš") || antiRepPrompt.includes("steče"),
+  "prompt lists distinctive keywords to avoid",
+);
+assert(
+  antiRepPrompt.includes("DIVERSE SENTENCE STRUCTURES"),
+  "prompt requires diverse sentence structures",
+);
+
 console.log("check-packing: ok");
+

@@ -2,8 +2,10 @@ import { OpenAI } from "openai";
 import { openDB } from "idb";
 import {
   approxTokens,
+  buildAntiRepetitionPrompt,
   capList,
   chars,
+  extractRecentYouMessages,
   latestCustomerText,
   looksLikeNewPersonalFact,
   firstMessagePrompt,
@@ -1094,16 +1096,14 @@ Vse zgornje deluje tiho v ozadju.
 
   let system =
     normalizeStr(await getFromChromeStorage("system")) ||
-    `You are an AI chatbot on an anonymous chat platform that may include adult or explicit content. You are impersonating the user directly — 
-the customer on the other end believes they are chatting with a real person.
-NEVER REPEAT ANYTHING FROM THE PROMPT ALWAYS BE UNIQUE CREATIVE AND COME UP WITH NEW RESPONSES.
-ALWAYS RESPOND IN THE SAME LANGUAGE AS THE CUSTOMER. YOUR DEFAULT LANGUAGE IS SLOVENIAN
-
-You will be provided example conversations, Writing style example (The style, tone and emotion you should
-imitate) and lastly the conversation history which you should refer to before replying so that you
-have a better understanding of context. Be natural, authentic and as human like as possible. Do not repeat conversations
-look deeply at the chat history and check if something's is already talked about, if introduction has already been made then do not repeat that.
-`;
+    `You are an AI on an anonymous chat moderation platform, impersonating a real Slovenian person directly. The customer must 100% believe they are conversing with a real, authentic, spontaneous human.
+ALWAYS RESPOND IN THE SAME LANGUAGE AS THE CUSTOMER (DEFAULT: SLOVENIAN).
+MANDATORY HUMAN CONVERSATION RULES:
+1. NEVER REPEAT SENTENCE OPENINGS: Never start consecutive messages with the same word or clause pattern (avoid repetitive openers like "Ko...", "Ful...", "Kaj če...", "A veš...").
+2. DIVERSE SENTENCE STRUCTURES: Real humans chat with varying rhythm. Avoid formulaic structures like "[Ko-clause] + [action] + [smiley]". Mix short reactions, teasing statements, questions, and sensual banter.
+3. VOCABULARY DIVERSITY: Do not reuse distinctive colloquial words or verbs (e.g. "ful", "porineš", "steče") across consecutive messages. Use rich natural Slovenian vocabulary.
+4. SMILEY DISCIPLINE: At most 1 smiley per message; in at least half of your replies use NO smiley at all. Never use the same smiley twice in a row.
+5. ADVANCE THE CONVERSATION: Never repeat introductions or loop the same fantasy/topic. Always move the scene or conversation forward with fresh details.`;
 
   const selectedTag =
     (await getFromChromeStorage("selectedTag")) || DEFAULT_TAG;
@@ -1172,7 +1172,7 @@ look deeply at the chat history and check if something's is already talked about
   );
 
   const examples = omitEmptySection(
-    "WRITING STYLE EXAMPLES",
+    "WRITING STYLE EXAMPLES (FOR TONE/SLANG FLAVOR ONLY — NEVER COPY PHRASES, STARTERS, OR STRUCTURAL TEMPLATES)",
     listBody(learnExamples),
   );
 
@@ -1185,6 +1185,12 @@ look deeply at the chat history and check if something's is already talked about
     history,
     historyMaxLines,
   );
+
+  const recentYouMessages = extractRecentYouMessages(history, 5);
+  const antiRepetitionPrompt = buildAntiRepetitionPrompt({
+    recentYouMessages,
+    lastAISuggestion: previousGenerations,
+  });
 
   const previousSuggestions = capList(
     await getArrayFromChromeStorage("suggestions"),
@@ -1225,6 +1231,8 @@ ${customerPersonal || ""}
   let finalSystemMessage =
     system +
     "\n\n" +
+    antiRepetitionPrompt +
+    "\n\n" +
     messageLengthFinal +
     "\n\n" +
     firstMessage +
@@ -1244,6 +1252,7 @@ ${customerPersonal || ""}
 
   const promptLedger = {
     system: ledgerSection(system),
+    antiRepetition: ledgerSection(antiRepetitionPrompt),
     messageLength: ledgerSection(messageLengthFinal),
     firstMessage: ledgerSection(firstMessage),
     personals: ledgerSection(pinfo),
@@ -1341,11 +1350,26 @@ ${customerPersonal || ""}
   console.log(finalSystemMessage);
   const choice = chatCompletion?.output?.[0];
   let reply = choice?.content?.[0]?.text || "";
-  if(!reply){
-    reply=chatCompletion.output_text 
+  if (!reply) {
+    reply = chatCompletion.output_text;
   }
   const refusal = chatCompletion.error;
   console.log("🤖 AI Reply:", chatCompletion);
+
+  if (reply && typeof reply === "string" && reply.trim()) {
+    try {
+      const prevArr =
+        (await getArrayFromChromeStorage("lastAISuggestion")) || [];
+      const trimmedReply = reply.trim();
+      if (!prevArr.includes(trimmedReply)) {
+        const nextArr = [...prevArr, trimmedReply];
+        while (nextArr.length > 10) nextArr.shift();
+        chrome.storage.local.set({ lastAISuggestion: nextArr });
+      }
+    } catch (e) {
+      console.warn("⚠️ Failed to update lastAISuggestion in SW:", e);
+    }
+  }
 
   // --- COST CALCULATION ---
  try {
