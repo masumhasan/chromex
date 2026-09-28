@@ -147,6 +147,29 @@ function looksLikePersonalBlock(text) {
   });
 }
 
+function isExtensionValid() {
+  try {
+    return Boolean(
+      typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.id,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function safeSendMessage(payload) {
+  if (!isExtensionValid()) return;
+  try {
+    chrome.runtime.sendMessage(payload, () => {
+      if (chrome.runtime?.lastError) {
+        // Silently ignore context invalidation error
+      }
+    });
+  } catch {
+    // Ignore invalidated context
+  }
+}
+
 function setInputValueSafe(el, text) {
   if (!el) return;
   el.value = text;
@@ -155,166 +178,171 @@ function setInputValueSafe(el, text) {
 }
 
 chrome.runtime.onMessage.addListener(async (message) => {
-  if (message.type === "suggestionResponse" && mode === 2) {
-    removeBanner();
-    const textBox = document.getElementById(idItems.textBox);
-    const mainCard = textBox?.closest("." + classItems.mainCard);
-    if (!mainCard) return;
+  if (!isExtensionValid()) return;
+  try {
+    if (message.type === "suggestionResponse" && mode === 2) {
+      removeBanner();
+      const textBox = document.getElementById(idItems.textBox);
+      const mainCard = textBox?.closest("." + classItems.mainCard);
+      if (!mainCard) return;
 
-    let suggestionCard = document.getElementById("ai-suggestion-card");
-    let suggestionText = "";
+      let suggestionCard = document.getElementById("ai-suggestion-card");
+      let suggestionText = "";
 
-    if (message?.payload?.success) {
-      suggestionText = (message.payload?.message || "").trim();
-    }
-
-    if (!suggestionCard) {
-      suggestionCard = document.createElement("div");
-      suggestionCard.id = "ai-suggestion-card";
-      suggestionCard.style.cssText = `
-        width: 100%;
-        background: #f5f5f5;
-        border: 1px solid #ccc;
-        border-radius: 6px;
-        padding: 2px;
-        font-family: monospace;
-        font-size: 14px;
-        display: flex;
-        flex-direction: column;
-        overflow-y: auto;
-        max-height: 140px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-      `;
-
-      const modeButtons = document.getElementById("mode-switcher");
-      if (modeButtons) mainCard.insertBefore(suggestionCard, modeButtons);
-      else mainCard.appendChild(suggestionCard);
-    }
-
-    if (!message?.payload?.success) {
-      suggestionCard.textContent =
-        message?.payload?.error || "❌ Failed to get suggestion from AI.";
-      suggestionCard.style.color = "red";
-    } else {
-      await pushToBoundedArray("lastAISuggestion", suggestionText, 10);
-
-      let suggestArr = (await getArrayFromChromeStorage("suggestions")) || [];
-      if (!suggestArr.includes(suggestionText)) {
-        if (suggestArr.length >= 10) suggestArr.shift();
-        suggestArr.push(suggestionText);
+      if (message?.payload?.success) {
+        suggestionText = (message.payload?.message || "").trim();
       }
 
-      suggestionCard.innerHTML = `
-        <b>💬Suggested reply:</b>
-        <p>${escapeHtml(suggestionText)}</p>
-        <div style="display:flex;justify-content:center;gap:5px;flex-wrap:wrap;">
-          <button id="insert-suggestion-btn" style="
-            width: 120px;height: 32px;padding: 2px 8px;font-size: 13px;
-            background-color: #4CAF50;color: white;border: none;border-radius: 6px;cursor: pointer;">
-            Insert Text
-          </button>
-          <button id="insert-send-suggestion-btn" style="
-            width: 120px;height: 32px;padding: 2px 8px;font-size: 13px;
-            background-color: #2196F3;color: white;border: none;border-radius: 6px;cursor: pointer;">
-            Insert & Send
-          </button>
-        </div>
-      `;
+      if (!suggestionCard) {
+        suggestionCard = document.createElement("div");
+        suggestionCard.id = "ai-suggestion-card";
+        suggestionCard.style.cssText = `
+          width: 100%;
+          background: #f5f5f5;
+          border: 1px solid #ccc;
+          border-radius: 6px;
+          padding: 2px;
+          font-family: monospace;
+          font-size: 14px;
+          display: flex;
+          flex-direction: column;
+          overflow-y: auto;
+          max-height: 140px;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        `;
 
-      document
-        .getElementById("insert-suggestion-btn")
-        ?.addEventListener("click", () => insertSuggestionText(suggestionText));
+        const modeButtons = document.getElementById("mode-switcher");
+        if (modeButtons) mainCard.insertBefore(suggestionCard, modeButtons);
+        else mainCard.appendChild(suggestionCard);
+      }
 
-      document
-        .getElementById("insert-send-suggestion-btn")
-        ?.addEventListener("click", () =>
-          insertAndSendSuggestion(suggestionText)
+      if (!message?.payload?.success) {
+        suggestionCard.textContent =
+          message?.payload?.error || "❌ Failed to get suggestion from AI.";
+        suggestionCard.style.color = "red";
+      } else {
+        await pushToBoundedArray("lastAISuggestion", suggestionText, 10);
+
+        let suggestArr = (await getArrayFromChromeStorage("suggestions")) || [];
+        if (!suggestArr.includes(suggestionText)) {
+          if (suggestArr.length >= 10) suggestArr.shift();
+          suggestArr.push(suggestionText);
+        }
+
+        suggestionCard.innerHTML = `
+          <b>💬Suggested reply:</b>
+          <p>${escapeHtml(suggestionText)}</p>
+          <div style="display:flex;justify-content:center;gap:5px;flex-wrap:wrap;">
+            <button id="insert-suggestion-btn" style="
+              width: 120px;height: 32px;padding: 2px 8px;font-size: 13px;
+              background-color: #4CAF50;color: white;border: none;border-radius: 6px;cursor: pointer;">
+              Insert Text
+            </button>
+            <button id="insert-send-suggestion-btn" style="
+              width: 120px;height: 32px;padding: 2px 8px;font-size: 13px;
+              background-color: #2196F3;color: white;border: none;border-radius: 6px;cursor: pointer;">
+              Insert & Send
+            </button>
+          </div>
+        `;
+
+        document
+          .getElementById("insert-suggestion-btn")
+          ?.addEventListener("click", () => insertSuggestionText(suggestionText));
+
+        document
+          .getElementById("insert-send-suggestion-btn")
+          ?.addEventListener("click", () =>
+            insertAndSendSuggestion(suggestionText)
+          );
+      }
+    }
+
+    if (message.type === "autoResponse" && mode === 3) {
+      removeBanner();
+      if (!message?.payload?.success) {
+        showBanner(
+          message?.payload?.error || "❌ Failed to get suggestion from AI."
         );
-    }
-  }
+        removeBanner();
+        return;
+      }
 
-  if (message.type === "autoResponse" && mode === 3) {
-    removeBanner();
-    if (!message?.payload?.success) {
-      showBanner(
-        message?.payload?.error || "❌ Failed to get suggestion from AI."
-      );
-      removeBanner();
-      return;
-    }
+      const responseText = (message?.payload?.message || "").trim();
+      if (!responseText) return console.warn("⚠️ Empty AI response payload.");
 
-    const responseText = (message?.payload?.message || "").trim();
-    if (!responseText) return console.warn("⚠️ Empty AI response payload.");
+      await pushToBoundedArray("lastAISuggestion", responseText, 10);
 
-    await pushToBoundedArray("lastAISuggestion", responseText, 10);
+      const textBox = document.getElementById(idItems.textBox);
+      if (!textBox) return console.error("❌ Textbox not found.");
 
-    const textBox = document.getElementById(idItems.textBox);
-    if (!textBox) return console.error("❌ Textbox not found.");
+      if (responseText.length < 70 && !(await skipShortRegenerate())) {
+        showBanner("⚠️ Response too short Regenerating...");
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        removeBanner();
+        await autoMode();
+        return;
+      }
 
-    if (responseText.length < 70 && !(await skipShortRegenerate())) {
-      showBanner("⚠️ Response too short Regenerating...");
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      removeBanner();
-      await autoMode();
-      return;
-    }
+      let sendButton = document.querySelector('button[type="submit"]');
+      if (!sendButton) return console.error("❌ Send button not found.");
 
-    let sendButton = document.querySelector('button[type="submit"]');
-    if (!sendButton) return console.error("❌ Send button not found.");
+      textBox.focus();
+      document.execCommand("insertText", false, responseText);
+      textBox.value = responseText;
+      textBox.dispatchEvent(new Event("input", { bubbles: true }));
+      textBox.dispatchEvent(new Event("change", { bubbles: true }));
+      textBox.focus();
 
-    textBox.focus();
-    document.execCommand("insertText", false, responseText);
-    textBox.value = responseText;
-    textBox.dispatchEvent(new Event("input", { bubbles: true }));
-    textBox.dispatchEvent(new Event("change", { bubbles: true }));
-    textBox.focus();
-
-    sendButton?.removeAttribute("disabled");
-    for (let i = 0; i < 10; i++) {
-      showBanner("Waiting time: " + (10 - i) + " seconds...");
+      sendButton?.removeAttribute("disabled");
+      for (let i = 0; i < 10; i++) {
+        showBanner("Waiting time: " + (10 - i) + " seconds...");
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        removeBanner();
+      }
+      sendButton.click();
       await new Promise((resolve) => setTimeout(resolve, 1000));
-      removeBanner();
-    }
-    sendButton.click();
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-  }
-
-  // ✅ personalsResponse: only update boxes if the formatted block is valid
-  if (message.type === "personalsResponse") {
-    const p = message?.payload || {};
-    if (!p.success) {
-      console.warn("❌ personalsResponse failed:", p.error);
-      return;
     }
 
-    const custEl = document.getElementById("customer-custom");
-    const modEl = document.getElementById("moderator-custom");
+    // ✅ personalsResponse: only update boxes if the formatted block is valid
+    if (message.type === "personalsResponse") {
+      const p = message?.payload || {};
+      if (!p.success) {
+        console.warn("❌ personalsResponse failed:", p.error);
+        return;
+      }
 
-    const newCust =
-      typeof p.customerPersonal === "string" ? p.customerPersonal.trim() : "";
-    const newMod =
-      typeof p.moderatorPersonal === "string" ? p.moderatorPersonal.trim() : "";
+      const custEl = document.getElementById("customer-custom");
+      const modEl = document.getElementById("moderator-custom");
 
-    if (custEl && looksLikePersonalBlock(newCust))
-      setInputValueSafe(custEl, newCust);
-    if (modEl && looksLikePersonalBlock(newMod))
-      setInputValueSafe(modEl, newMod);
+      const newCust =
+        typeof p.customerPersonal === "string" ? p.customerPersonal.trim() : "";
+      const newMod =
+        typeof p.moderatorPersonal === "string" ? p.moderatorPersonal.trim() : "";
 
-    const finalCust = custEl?.value?.trim() || "";
-    const finalMod = modEl?.value?.trim() || "";
-    await setToChromeStorage("customerPersonal", finalCust);
-    await setToChromeStorage("moderatorPersonal", finalMod);
-    await setToChromeStorage(
-      "personals",
-      `You: ${finalMod}, customer${finalCust}`
-    );
+      if (custEl && looksLikePersonalBlock(newCust))
+        setInputValueSafe(custEl, newCust);
+      if (modEl && looksLikePersonalBlock(newMod))
+        setInputValueSafe(modEl, newMod);
 
-    if (typeof p.tag === "string" && p.tag.trim()) {
-      const tag = p.tag.trim();
-      await setToChromeStorage("selectedTag", tag);
-      const tagSelect = document.getElementById("learn-tag-select");
-      if (tagSelect) tagSelect.value = tag;
+      const finalCust = custEl?.value?.trim() || "";
+      const finalMod = modEl?.value?.trim() || "";
+      await setToChromeStorage("customerPersonal", finalCust);
+      await setToChromeStorage("moderatorPersonal", finalMod);
+      await setToChromeStorage(
+        "personals",
+        `You: ${finalMod}, customer${finalCust}`
+      );
+
+      if (typeof p.tag === "string" && p.tag.trim()) {
+        const tag = p.tag.trim();
+        await setToChromeStorage("selectedTag", tag);
+        const tagSelect = document.getElementById("learn-tag-select");
+        if (tagSelect) tagSelect.value = tag;
+      }
     }
+  } catch {
+    // Silently ignore invalidated context errors
   }
 });
 
@@ -531,13 +559,13 @@ async function executeScript() {
 async function autoMode() {
   showBanner("AI is auto-filling, please wait...");
   if (dataGrabbed === false) await grabData(10);
-  chrome.runtime.sendMessage({ type: "autoFill" });
+  safeSendMessage({ type: "autoFill" });
 }
 
 async function suggestMode() {
   showBanner("Please wait, getting suggestion...");
   if (dataGrabbed === false) await grabData(10);
-  chrome.runtime.sendMessage({ type: "getSuggestion" });
+  safeSendMessage({ type: "getSuggestion" });
 }
 
 async function learnMode() {
@@ -599,7 +627,7 @@ async function learn2(text = null) {
 
   try {
     const now = new Date();
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       type: "storeConversations",
       data: { You: userText, Customer: latestUserMsg, date: now.toISOString() },
     });
@@ -632,33 +660,23 @@ async function grabData(limit = 4) {
 
   let data = [];
   let currentMessage = [];
-  let latestMessageDate =
-    document.querySelector("li.ng-star-inserted .timeline-heading")
-      ?.innerText || "";
+
+  const headingEls = document.querySelectorAll("li.ng-star-inserted .timeline-heading");
+  const latestMessageDate = headingEls.length > 0
+    ? (headingEls[headingEls.length - 1]?.innerText || "").trim()
+    : "";
   await setToChromeStorage("latestMessageDate", latestMessageDate);
   await setToChromeStorage("botNow", new Date().toString());
+
   const timelineItems = document.querySelectorAll("li.ng-star-inserted");
-  let latestUser = document
-    .querySelector(classItems.userMessage)
-    ?.innerText?.trim();
-
-  currentMessage.push({
-    role: "user",
-    content:
-      (latestUser || "") ,
-  });
   timelineItems.forEach((li) => {
-    // 2. Find the message body within this list item
-    // classItems.userMessage usually targets .timeline-body, so we look for that class
+    // Find the message body within this list item
     const body = li.querySelector(".timeline-body");
-
-    // If no body exists, it might be a date separator or system note, so we skip
     if (!body) return;
 
     const text = body.innerText?.trim();
     if (!text) return; // Skip empty text
 
-    // 3. Determine 'You' vs 'Customer' based on the specific class name on the LI
     // Agents have 'timeline-inverted', Customers do not.
     if (li.classList.contains("timeline-inverted")) {
       data.push(`You: ${text}`);
@@ -667,8 +685,27 @@ async function grabData(limit = 4) {
     }
   });
 
+  // Extract latest customer message directly from the end of timeline data
+  let latestUser = "";
+  const lastCustomerLine = data.slice().reverse().find((line) => /^Customer:\s*/i.test(line));
+  if (lastCustomerLine) {
+    latestUser = lastCustomerLine.replace(/^Customer:\s*/i, "").trim();
+  } else {
+    const customerBodies = document.querySelectorAll(
+      "li.ng-star-inserted:not(.timeline-inverted) .timeline-body"
+    );
+    if (customerBodies.length > 0) {
+      latestUser = customerBodies[customerBodies.length - 1]?.innerText?.trim() || "";
+    }
+  }
+
+  currentMessage.push({
+    role: "user",
+    content: latestUser || "",
+  });
+
+  // data2 is passed to processPersonals — do NOT push latestUser twice
   const data2 = data.slice();
-  data2.push(`Customer: ${latestUser || ""}`);
 
   const customerPersonal =
     document.getElementById("customer-custom")?.value || "";
@@ -686,7 +723,7 @@ async function grabData(limit = 4) {
     `You: ${moderatorPersonal.trim()}, customer${customerPersonal.trim()}`
   );
 
-  await chrome.runtime.sendMessage({
+  await safeSendMessage({
     type: "processPersonals",
     data: { customerPersonal, moderatorPersonal },
     conversationHistory: data2,
@@ -698,26 +735,44 @@ async function grabData(limit = 4) {
 }
 
 function storeArrayToChromeStorage(key, array) {
-  if (!Array.isArray(array)) return;
-  chrome.storage.local.set({ [key]: array }, () => {
-    if (chrome.runtime.lastError)
-      console.error("❌ Failed to store:", chrome.runtime.lastError);
-  });
+  if (!isExtensionValid() || !Array.isArray(array)) return;
+  try {
+    chrome.storage.local.set({ [key]: array }, () => {
+      if (chrome.runtime?.lastError) {
+        // Silently ignore context invalidation error
+      }
+    });
+  } catch {
+    // Context invalidated
+  }
 }
 
 function getArrayFromChromeStorage(key) {
-  return new Promise((resolve, reject) => {
-    chrome.storage.local.get([key], (result) => {
-      if (chrome.runtime.lastError) return reject(chrome.runtime.lastError);
-      const val = result[key];
-      resolve(Array.isArray(val) ? val : []);
-    });
+  return new Promise((resolve) => {
+    if (!isExtensionValid()) return resolve([]);
+    try {
+      chrome.storage.local.get([key], (result) => {
+        if (chrome.runtime?.lastError) return resolve([]);
+        const val = result?.[key];
+        resolve(Array.isArray(val) ? val : []);
+      });
+    } catch {
+      resolve([]);
+    }
   });
 }
 
 function getFromChromeStorage(key) {
   return new Promise((resolve) => {
-    chrome.storage.local.get([key], (result) => resolve(result?.[key]));
+    if (!isExtensionValid()) return resolve(undefined);
+    try {
+      chrome.storage.local.get([key], (result) => {
+        if (chrome.runtime?.lastError) return resolve(undefined);
+        resolve(result?.[key]);
+      });
+    } catch {
+      resolve(undefined);
+    }
   });
 }
 
@@ -735,7 +790,15 @@ async function skipShortRegenerate() {
 
 function setToChromeStorage(key, value) {
   return new Promise((resolve) => {
-    chrome.storage.local.set({ [key]: value }, () => resolve(true));
+    if (!isExtensionValid()) return resolve(false);
+    try {
+      chrome.storage.local.set({ [key]: value }, () => {
+        if (chrome.runtime?.lastError) return resolve(false);
+        resolve(true);
+      });
+    } catch {
+      resolve(false);
+    }
   });
 }
 

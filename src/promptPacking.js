@@ -3,11 +3,7 @@ export const MAX_BAD = 3;
 export const MAX_SUGGEST_FLOW = 3;
 export const DEFAULT_HISTORY_LINES = 40;
 
-const HISTORY_WRAPPER_PREFIX = `Use this history to understand context, tone, and what has already taken place.
-Never repeat greetings, introductions, topics, or sentence structures that have already occurred.
-Always bring fresh energy, varied sentence openings, and narrative progression.
----
-CONVERSATION HISTORY (latest to oldest):
+const HISTORY_WRAPPER_PREFIX = `--- CONVERSATION HISTORY (chronological order) ---
 `;
 
 export function chars(str) {
@@ -120,7 +116,8 @@ export function windowHistory(lines, maxLines) {
   if (maxLines == null || maxLines === 0) return lines.slice();
   const n = Math.floor(Number(maxLines));
   if (!Number.isFinite(n) || n <= 0) return lines.slice();
-  return lines.slice(0, n);
+  if (lines.length <= n) return lines.slice();
+  return lines.slice(lines.length - n);
 }
 
 export function resolveHistoryMaxLines(value) {
@@ -136,21 +133,124 @@ export function packConversationHistory(lines, maxLines) {
   return HISTORY_WRAPPER_PREFIX + packed.join("\n") + "\n---\n";
 }
 
-export const ESTABLISHED_HISTORY_MIN = 8;
+export function packPreviousConversationHistory(
+  lines,
+  maxLines,
+  currentCustomerMessage,
+) {
+  if (!Array.isArray(lines) || !lines.length) return "";
+  let prevLines = lines.slice();
+
+  if (currentCustomerMessage) {
+    const cleanCurrent = String(currentCustomerMessage).trim().toLowerCase();
+    const lastLine = String(
+      prevLines[prevLines.length - 1] || "",
+    ).trim().toLowerCase();
+    const lastContentOnly = lastLine
+      .replace(/^Customer:\s*/i, "")
+      .trim()
+      .toLowerCase();
+    if (lastLine === cleanCurrent || lastContentOnly === cleanCurrent) {
+      prevLines.pop();
+    }
+  }
+
+  const packed = windowHistory(prevLines, maxLines);
+  if (!packed.length) return "";
+  return HISTORY_WRAPPER_PREFIX + packed.join("\n") + "\n---\n";
+}
+
+export function buildNewInformationDirective() {
+  return `--- CRITICAL CONVERSATION FLOW & NEW INFORMATION DIRECTIVE ---
+1. CURRENT USER MESSAGE CONTAINS NEW INFORMATION:
+   - The message in the active user turn is what the customer is saying RIGHT NOW.
+   - Any facts, personal details, or statements introduced in the CURRENT user message MUST be treated as BRAND-NEW information that you are learning for the very first time.
+2. NEVER HALLUCINATE PREVIOUS KNOWLEDGE:
+   - NEVER say or imply: "as you already mentioned", "as you said before", "as I already know", "like you told me", "as you stated", or "like you said" when reacting to details in the user's LATEST message.
+   - React to new facts in the current message as fresh news (e.g., show natural interest, delight, surprise, or curiosity).
+   - Only refer to previous context if it actually appeared in EARLIER turns of the conversation history prior to this message.
+--- END NEW INFORMATION DIRECTIVE ---`.trim();
+}
+
+export function buildSlovenianQualityPrompt() {
+  return `--- SLOVENIAN LANGUAGE & QUALITY GUIDELINES (STRICT NATIVE SLOVENIAN) ---
+1. VERBS & IDIOMS:
+   - "pamper / spoil": ALWAYS use "razvajaš" (NEVER "razvadaš").
+   - "brighten day / soothe soul": ALWAYS use "polepšaš dan in pobožaš dušo" (NEVER "mehča dan").
+   - "like / preference": ALWAYS include "imaš rad" or "imaš raje" (e.g. "a imaš rad bolj kavice...?", NEVER omit "imaš" like "a rad bolj...").
+   - "at first / in the beginning": ALWAYS use "na začetku" (NEVER "prvega").
+   - "between the sheets": ALWAYS use "med rjuhami" (locative case, NEVER "med rjuhe").
+   - "mean a lot": ALWAYS use "veliko pomenita / pomeni" (NEVER omit "veliko").
+2. CASES & PREPOSITIONS:
+   - Compliments: "taka v očeh fanta kot si ti" (NEVER "v takem očeh takega fanta").
+   - Pressing body against partner: "ritko pritisnem nate" (NEVER "ritko ti pritisnem nase").
+   - Sitting on partner: "bi se počasi usedla nate" (NEVER "bi te počasi usedla nase").
+3. FEMALE BOT EROTIC PERSPECTIVE & ANATOMY:
+   - You are IMPERSONATING A FEMALE PERSONA (or trans woman persona).
+   - FEMALE ANATOMY: Pussy ("pička"), breasts ("joške"), ass ("rit / šupek").
+   - MALE CUSTOMER ANATOMY: Penis ("ga", "trdoto", "kurac").
+   - IN PENETRATIVE SEX: Male customer penetrates her ("primeš me za boke in nabijaš v pičko, dokler ne zarjovem"), she strokes his penis ("ti ga drkam"), she sits on him ("bi se usedla nate"), she presents her ass ("ritko obrnem proti tebi").
+   - FORBIDDEN: The female bot persona MUST NEVER claim to penetrate him or have a penis ("te nabijam v pičko" or "ritko ti obrnem proti sebi" is strictly FORBIDDEN).
+   - PRONOUN CONSISTENCY: Keep subject/object pronouns consistent ("roka mi zdrsne... da dobro začutim trdoto").
+--- END SLOVENIAN QUALITY GUIDELINES ---`.trim();
+}
+
+export const ESTABLISHED_HISTORY_MIN = 3;
 
 export function firstMessagePrompt({ conversationStart, established } = {}) {
   const start = conversationStart || "(unknown)";
   if (established) {
-    return `Conversation started: ${start}.
-This is an established conversation. Do not repeat intros or already-discussed topics; advance to new topics.
-Nickname vs real name (Slovenian): only ask for a real name if it is still unknown. If you already asked and they ignored, refused, or dodged, do not ask again. Accept the nickname and move on.`;
+    return `Začetek pogovora: ${start}. Utečen pogovor — ne ponavljaj spoznavnih vprašanj. Pravo ime vprašaj le, če je še neznano in ga še nisi vprašal; če se izmika, sprejmi vzdevek.`;
   }
 
-  return `Conversation started: ${start}.
-  Use this to determine if its the first time messaging, and if so start with basic get to know question. Carefully refer to the history (if it exists) to keep the conversation flow natural.
-   Do not repeat any questions or information that has already been discussed in the conversation history always advance to a new topic or conversation. 
-   In Slovenian, you must differentiate between real names (e.g., Luka, Maja, Rok) and nicknames/usernames. Nicknames often end in diminutives like -či, -ek, -ki, -ko, -y (e.g., Majči, Luki, Roky), use common nouns (sonček, zmajček), or have numbers (marko123). If they are using a nickname or username, naturally ask for their real name during the flow of the conversation. 
-   FALLBACK RULE: If you have already asked for their real name and they ignored it, refused, or dodged the question, DO NOT ask again. Accept the nickname/username and move on to keep the conversation natural and engaging.`;
+  return `Začetek pogovora: ${start}.
+Če je to prvi stik, začni z naravnim spoznavanjem. Če stranka uporablja vzdevek ali uporabniško ime (npr. z -či, -ko, številke), med pogovorom sproščeno vprašaj za pravo ime. Če se vprašanju izogne ali noče povedati, ga ne sprašuj ponovno, ampak sprejmi vzdevek.`;
+}
+
+export function computeTimeContext({ botNow, latestMessageDate } = {}) {
+  const now = botNow ? new Date(botNow) : new Date();
+  const days = [
+    "nedelja",
+    "ponedeljek",
+    "torek",
+    "sreda",
+    "četrtek",
+    "petek",
+    "sobota",
+  ];
+  const isValidNow = Number.isFinite(now.getTime());
+  const dayName = isValidNow ? days[now.getDay()] : "danes";
+  const hours = isValidNow ? now.getHours() : 12;
+  const mins = isValidNow ? String(now.getMinutes()).padStart(2, "0") : "00";
+  const timeStr = `${hours}:${mins}`;
+
+  let daypart = "dan";
+  if (hours >= 5 && hours < 12) daypart = "dopoldne";
+  else if (hours >= 12 && hours < 17) daypart = "popoldne";
+  else if (hours >= 17 && hours < 21) daypart = "večer";
+  else daypart = "noč";
+
+  let gapInfo = "nedaven stik";
+  if (latestMessageDate) {
+    const prev = new Date(latestMessageDate);
+    if (Number.isFinite(prev.getTime()) && isValidNow) {
+      const diffMs = now.getTime() - prev.getTime();
+      const diffHours = diffMs / (1000 * 60 * 60);
+      if (diffHours < 2) {
+        gapInfo = "tekoč pogovor (<2h, ne pozdravljaj znova)";
+      } else if (diffHours < 24) {
+        gapInfo = "isti dan (nekaj ur premora)";
+      } else {
+        const daysAgo = Math.floor(diffHours / 24);
+        gapInfo = `premor ${daysAgo > 1 ? `${daysAgo} dni` : "1 dan"} (pozdravi ali omeni premor)`;
+      }
+    }
+  }
+
+  return `--- ČASOVNI KONTEKST ---
+Čas: ${dayName}, ${daypart} (${timeStr}). Tok: ${gapInfo}.
+Pravilo: Čas omeni le, če je naravno (največ 1 stavek). Nikoli ne navajaj točne ure ali tehničnih žigov.
+--- KONEC ČASOVNEGA KONTEKSTA ---`.trim();
 }
 
 export function delta(before, after) {
@@ -207,7 +307,8 @@ export function extractRecentYouMessages(history, maxCount = 5) {
   const max = Math.max(0, Math.floor(Number(maxCount) || 5));
   if (max === 0) return [];
   const youMessages = [];
-  for (const line of history) {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const line = history[i];
     const s = String(line ?? "").trim();
     if (/^You:\s*/i.test(s)) {
       const text = s.replace(/^You:\s*/i, "").trim();
@@ -305,39 +406,21 @@ export function buildAntiRepetitionPrompt({
 
   let dynamicRules = "";
   if (openers.length > 0) {
-    dynamicRules += `- FORBIDDEN OPENING WORDS: Your recent messages started with: [${openers.join(", ")}]. YOU MUST NOT start your next message with any of these words!\n`;
+    dynamicRules += `FORBIDDEN OPENING WORDS: [${openers.join(", ")}]. Never start with these words! `;
   }
   if (smileys.length > 0) {
-    dynamicRules += `- FORBIDDEN SMILEYS: Your recent messages used: ${smileys.join(" ")}. DO NOT reuse any of these smileys in this reply!\n`;
+    dynamicRules += `Forbidden smileys: ${smileys.join(" ")}. `;
   }
   if (keywords.length > 0) {
-    dynamicRules += `- AVOID REPEATING DISTINCTIVE WORDS/VERBS: Recently used: [${keywords.join(", ")}]. Do not repeat these exact words; use fresh synonyms!\n`;
+    dynamicRules += `Avoid repeating: [${keywords.join(", ")}]. `;
   }
 
-  return `--- STYLE DIVERSITY & ANTI-REPETITION (CRITICAL HUMANIZATION RULES) ---
-You are chatting as a real, spontaneous human. Real people do not repeat conversational habits, formulas, or sentence openings.
-Strictly adhere to the following rules:
-
-1. ABSOLUTE BAN ON REPETITIVE SENTENCE OPENINGS:
-- NEVER start 2 consecutive messages with the same word or clause pattern!
-- DO NOT start with cliché repetitive openers such as "Ko...", "Ful...", "Kaj če...", "A veš...", "Opa...", "Joj...".
-${dynamicRules ? dynamicRules.trim() + "\n" : ""}- Radically vary how your message begins: start directly with an action verb, a witty observation, a punchy tease, an unexpected exclamation, or a spontaneous short fragment.
-
-2. DIVERSE SENTENCE STRUCTURES (NO FIXED FORMULAS):
-- FORBIDDEN FORMULA: Do NOT repeatedly use "[Subordinate clause with Ko/Če...] + [Action/Desire] + [Smiley]".
-- Radically vary your syntax: use short conversational fragments, direct playful statements, rhetorical questions, or sensual banter. Break predictable cadence.
-
-3. VOCABULARY DIVERSITY & NO SLANG RECYCLING:
-- Do not recycle favorite pet words (e.g., "ful", "porineš", "steče") across consecutive turns.
-- Use natural, varied Slovenian vocabulary and rich synonyms.
-
-4. SMILEY / EMOJI DISCIPLINE:
-- Use at most ONE smiley in a message. In at least 50% of your messages, use ZERO smileys.
-- NEVER use the exact same smiley two turns in a row, and never use more than one smiley in one message.
-
-5. TOPIC & NARRATIVE PROGRESSION:
-- Do not loop the same scenario, compliment, or fantasy with slightly changed words.
-- Advance the interaction: introduce a new detail, respond to an unaddressed aspect of what the customer said, or playfully shift the topic.
---- END STYLE DIVERSITY & ANTI-REPETITION ---`.trim();
+  return `--- ANTI-REPETITION & DIVERSITY ---
+1. NO REPEATED OPENERS: Never start with the same word as recent replies (avoid "Ko...", "Ful..."). ${dynamicRules}Vary starters (action verb, tease, observation).
+2. DIVERSE SENTENCE STRUCTURES: Do NOT repeat "[Ko-clause] + [desire] + [smiley]". Mix short remarks, teasing questions, sensual fragments.
+3. VOCABULARY: Use fresh synonyms; no pet-word recycling.
+4. SMILEYS: Max 1 (use 0 in 50% of replies). Never repeat the same smiley consecutively.
+5. ADVANCE: Move the scene/topic forward; do not loop previous fantasies.
+--- END ANTI-REPETITION ---`.trim();
 }
 

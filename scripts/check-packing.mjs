@@ -1,8 +1,12 @@
 import {
   approxTokens,
   buildAntiRepetitionPrompt,
+  buildNewInformationDirective,
+  buildSlovenianQualityPrompt,
   capList,
+  computeTimeContext,
   delta,
+  ESTABLISHED_HISTORY_MIN,
   extractOpeningWords,
   extractRecentKeywords,
   extractRecentYouMessages,
@@ -15,6 +19,7 @@ import {
   pctChange,
   DEFAULT_HISTORY_LINES,
   packConversationHistory,
+  packPreviousConversationHistory,
   triggerTagFromMessage,
   looksLikeNewPersonalFact,
   firstMessagePrompt,
@@ -59,12 +64,13 @@ assert(
 const hundred = Array.from({ length: 100 }, (_, i) => `line-${i}`);
 const windowed = windowHistory(hundred, 40);
 assert(windowed.length === 40, "windowHistory 100→40");
-assert(windowed[0] === "line-0", "windowHistory keeps latest-first prefix");
+assert(windowed[0] === "line-60", "windowHistory keeps recent window start");
+assert(windowed[39] === "line-99", "windowHistory keeps most recent line");
 
 assert(DEFAULT_HISTORY_LINES === 40, "DEFAULT_HISTORY_LINES is 40");
 const packed40 = packConversationHistory(hundred, DEFAULT_HISTORY_LINES);
-assert(packed40.includes("line-0"), "packed history includes latest line");
-assert(!packed40.includes("line-99"), "packed history drops old lines at default 40");
+assert(packed40.includes("line-99"), "packed history includes latest line");
+assert(!packed40.includes("line-0"), "packed history drops old lines at default 40");
 assert(
   (packed40.match(/^line-/gm) || []).length === 40,
   "packConversationHistory 100→40 lines",
@@ -77,6 +83,27 @@ assert(
 );
 assert(packConversationHistory([], 40) === "", "empty history omits section");
 assert(packConversationHistory(null, 40) === "", "non-array history omits section");
+
+const sampleHistory = [
+  "Customer: Hello",
+  "You: Hi there!",
+  "Customer: I am single and childless",
+];
+const packedPrev = packPreviousConversationHistory(
+  sampleHistory,
+  40,
+  "I am single and childless",
+);
+assert(!packedPrev.includes("I am single and childless"), "packPreviousConversationHistory excludes current turn");
+assert(packedPrev.includes("Customer: Hello"), "packPreviousConversationHistory preserves earlier history");
+
+const newInfoDir = buildNewInformationDirective();
+assert(newInfoDir.includes("NEW INFORMATION DIRECTIVE"), "new info directive header");
+assert(newInfoDir.includes("NEVER HALLUCINATE PREVIOUS KNOWLEDGE"), "new info directive rule");
+
+const slovenianQuality = buildSlovenianQualityPrompt();
+assert(slovenianQuality.includes("SLOVENIAN LANGUAGE & QUALITY GUIDELINES"), "slovenian quality header");
+assert(slovenianQuality.includes("razvajaš"), "slovenian quality includes razvajaš verb rule");
 
 const fortyChars = "1234567890123456789012345678901234567890";
 assert(fortyChars.length === 40, "fixture is 40 chars");
@@ -124,8 +151,17 @@ const fmEst = firstMessagePrompt({
 });
 assert(fmEst.length < fmNew.length, "established first-message is shorter");
 assert(fmEst.includes("8 Nov 2021"), "established keeps start date");
-assert(fmNew.includes("get to know"), "new chat keeps onboarding");
-assert(fmEst.includes("real name"), "established keeps nickname rule");
+assert(fmNew.includes("spoznavanjem"), "new chat keeps onboarding in Slovenian");
+assert(fmEst.includes("Pravo ime"), "established keeps nickname rule in Slovenian");
+assert(ESTABLISHED_HISTORY_MIN === 3, "ESTABLISHED_HISTORY_MIN is 3");
+
+const tc = computeTimeContext({
+  botNow: "2026-09-21T14:19:00Z",
+  latestMessageDate: "2026-09-21T11:00:00Z",
+});
+assert(tc.includes("ČASOVNI KONTEKST"), "time context header");
+assert(tc.includes("popoldne") || tc.includes("dan"), "time context daypart");
+assert(tc.length < 300, "computeTimeContext is dense (<300 chars)");
 
 const recentPool = Array.from({ length: 30 }, (_, i) => i + 1);
 const recentSample = recentThenSample(recentPool, 5, 3);
@@ -152,8 +188,8 @@ const mockHistory = [
 const extractedYou = extractRecentYouMessages(mockHistory, 5);
 assert(extractedYou.length === 3, "extractRecentYouMessages finds 3 You lines");
 assert(
-  extractedYou[0] === "Ko prideš domov, mi porineš roko pod majico? 😉",
-  "first You line matches",
+  extractedYou[0] === "A veš, da komaj čakam? :P",
+  "first You line matches most recent",
 );
 
 const openers = extractOpeningWords(extractedYou);
