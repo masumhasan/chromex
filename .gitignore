@@ -28,3 +28,11 @@ src/App copy.jsx
 *.njsproj
 *.sln
 *.sw?
+
+# Local Secrets
+.key
+*.key
+.env
+.env.*
+dist.zip
+

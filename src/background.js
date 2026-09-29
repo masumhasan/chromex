@@ -93,10 +93,10 @@ const TAGS = [
   "(trigger) Please reactivate the user!",
 ];
 const DEFAULT_TAG = TAGS[0];
-const LEARN_LIMIT_OPTIONS = [5, 10, 20, 30, 50];
+const LEARN_LIMIT_OPTIONS = [3, 6, 10, 15, 20, 30, 50];
 const TRIGGER_LEARN_LIMIT_OPTIONS = [2, 5, 10];
 
-const DEFAULT_LEARN_LIMIT = 30;
+const DEFAULT_LEARN_LIMIT = 6;
 const DEFAULT_TRIGGER_LEARN_LIMIT = 2;
 
 function clampAllowedInt(value, allowed, fallback) {
@@ -797,30 +797,57 @@ ${history.slice().join("\n")}
 // --------------------
 // 📡 MAIN LISTENER
 // --------------------
-chrome.runtime.onMessage.addListener((message, sender,sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "getSuggestion" || message.type === "autoFill") {
     console.log(`🛰️ Received ${message.type} request`, message);
 
-    gptChat()
-      .then((payload) => {
-        const tabId = sender.tab?.id;
+    (async () => {
+      let tabId = sender.tab?.id;
+      if (tabId === undefined) {
+        try {
+          const [activeTab] = await chrome.tabs.query({
+            active: true,
+            currentWindow: true,
+          });
+          tabId = activeTab?.id;
+        } catch {
+          // ignore
+        }
+      }
+
+      const responseType =
+        message.type === "getSuggestion"
+          ? "suggestionResponse"
+          : "autoResponse";
+
+      try {
+        const payload = await gptChat();
         if (tabId !== undefined) {
           chrome.tabs.sendMessage(tabId, {
-            type:
-              message.type === "getSuggestion"
-                ? "suggestionResponse"
-                : "autoResponse",
+            type: responseType,
             payload,
           });
         }
-      })
-      .catch(async (err) => {
+      } catch (err) {
         console.error("❌ Chat generation failed:", err);
         await logError(
           "Chat Generation Failed",
-          err?.message || JSON.stringify(err)
+          err?.message || JSON.stringify(err),
         );
-      });
+        if (tabId !== undefined) {
+          chrome.tabs.sendMessage(tabId, {
+            type: responseType,
+            payload: {
+              success: false,
+              message: "",
+              error: err?.message || "Chat generation failed.",
+            },
+          });
+        }
+      }
+    })();
+
+    return true;
   }
 
   if (message.type === "storeConversations") {
@@ -873,17 +900,17 @@ chrome.runtime.onMessage.addListener((message, sender,sendResponse) => {
 async function gptChat() {
   const apiKey = (await getFromChromeStorage("openai"))?.trim();
   const grokKey = (await getFromChromeStorage("grokKey"))?.trim();
-  if (!apiKey) {
-    const msg =
-      "Missing OpenAI API key. Open the extension popup → Settings and paste your key.";
-    await logError("Missing OpenAI API Key", msg);
-    return { success: false, message: "", error: msg };
-  }
-
   const selectedModel =
     (await getFromChromeStorage("openaiModel")) || "gpt-5.1";
   const isGrok = selectedModel.toLowerCase().includes("grok");
   const activeApiKey = isGrok ? grokKey : apiKey;
+
+  if (!activeApiKey) {
+    const providerName = isGrok ? "Grok" : "OpenAI";
+    const msg = `Missing ${providerName} API key. Open the extension popup → Settings and paste your key.`;
+    await logError(`Missing ${providerName} API Key`, msg);
+    return { success: false, message: "", error: msg };
+  }
   const messages = await getFromChromeStorage("currentMessage").then((val) =>
     Array.isArray(val) ? val : [],
   );
@@ -1053,8 +1080,6 @@ Be natural, spontaneous, sensual, and engaging. Never repeat introductions or lo
     .map((s) => normalizeStr(s))
     .filter(Boolean);
 
-  const pool = taggedTexts.length > 0 ? taggedTexts : fallbackAllTexts;
-
   const learnLimit = clampAllowedInt(
     await getFromChromeStorage("learnExamplesLimit"),
     LEARN_LIMIT_OPTIONS,
@@ -1070,6 +1095,13 @@ Be natural, spontaneous, sensual, and engaging. Never repeat introductions or lo
   const finalLearnLimit = isTriggerTag(selectedTag)
     ? triggerLearnLimit
     : learnLimit;
+
+  const isEroticTag = selectedTag.toLowerCase().includes("erotic");
+  const basePool = taggedTexts.length > 0 ? taggedTexts : fallbackAllTexts;
+  const filteredPool = (!isEroticTag && basePool.length > 6)
+    ? basePool.filter((t) => !/\b(pičk|kurc|fuka|nabija|ritnic|anusu|vazalin|dildo|tangice)\b/i.test(t))
+    : basePool;
+  const pool = filteredPool.length >= finalLearnLimit ? filteredPool : basePool;
 
   // ✅ Only messages (strings) are sent — not objects
   const learnExamples = isTriggerTag(selectedTag)
@@ -1213,6 +1245,17 @@ ${customerPersonal || "(none)"}
 
   console.log(`🧠 Using ${isGrok ? "Grok" : "OpenAI"} Model:`, selectedModel);
 
+  let activeMessages = messages.filter(
+    (m) => m && typeof m.content === "string" && m.content.trim(),
+  );
+  if (!activeMessages.length) {
+    if (latestCustomer && latestCustomer.trim()) {
+      activeMessages = [{ role: "user", content: latestCustomer.trim() }];
+    } else {
+      activeMessages = [{ role: "user", content: "Živjo" }];
+    }
+  }
+
   let requestPayload;
 
   if (isGrok) {
@@ -1228,7 +1271,7 @@ ${customerPersonal || "(none)"}
       model: selectedModel,
       // Grok rejects the "instructions" parameter.
       // The system prompt MUST be the first message in the input array.
-      input: [{ role: "system", content: finalSystemMessage }, ...messages],
+      input: [{ role: "system", content: finalSystemMessage }, ...activeMessages],
  
       store: false, // Ensure highly explicit chats are NOT saved on xAI servers
     };
@@ -1240,7 +1283,7 @@ ${customerPersonal || "(none)"}
 
     requestPayload = {
       model: selectedModel,
-      input: [...messages],
+      input: [...activeMessages],
       store: false,
       instructions: finalSystemMessage, // OpenAI uses the instructions parameter
       max_output_tokens: 8000,
@@ -1286,6 +1329,9 @@ ${customerPersonal || "(none)"}
   let reply = choice?.content?.[0]?.text || "";
   if (!reply) {
     reply = chatCompletion.output_text;
+  }
+  if (!reply) {
+    reply = chatCompletion?.choices?.[0]?.message?.content || "";
   }
   const refusal = chatCompletion.error;
   console.log("🤖 AI Reply:", chatCompletion);

@@ -177,11 +177,22 @@ function setInputValueSafe(el, text) {
   el.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
+let pendingActionTimer = null;
+function clearPendingTimer() {
+  if (pendingActionTimer) {
+    clearTimeout(pendingActionTimer);
+    pendingActionTimer = null;
+  }
+}
+
 chrome.runtime.onMessage.addListener(async (message) => {
   if (!isExtensionValid()) return;
   try {
-    if (message.type === "suggestionResponse" && mode === 2) {
+    if (message.type === "suggestionResponse") {
+      clearPendingTimer();
       removeBanner();
+      if (mode !== 2) return;
+
       const textBox = document.getElementById(idItems.textBox);
       const mainCard = textBox?.closest("." + classItems.mainCard);
       if (!mainCard) return;
@@ -201,7 +212,7 @@ chrome.runtime.onMessage.addListener(async (message) => {
           background: #f5f5f5;
           border: 1px solid #ccc;
           border-radius: 6px;
-          padding: 2px;
+          padding: 6px;
           font-family: monospace;
           font-size: 14px;
           display: flex;
@@ -217,10 +228,15 @@ chrome.runtime.onMessage.addListener(async (message) => {
       }
 
       if (!message?.payload?.success) {
-        suggestionCard.textContent =
-          message?.payload?.error || "❌ Failed to get suggestion from AI.";
-        suggestionCard.style.color = "red";
+        suggestionCard.innerHTML = `
+          <div style="color: #c00; font-weight: bold; margin-bottom: 4px;">⚠️ Suggestion Error:</div>
+          <div style="color: #333;">${escapeHtml(message?.payload?.error || "Failed to get suggestion from AI.")}</div>
+        `;
+        suggestionCard.style.background = "#fff0f0";
+        suggestionCard.style.borderColor = "#f5c6cb";
       } else {
+        suggestionCard.style.background = "#f5f5f5";
+        suggestionCard.style.borderColor = "#ccc";
         await pushToBoundedArray("lastAISuggestion", suggestionText, 10);
 
         let suggestArr = (await getArrayFromChromeStorage("suggestions")) || [];
@@ -258,12 +274,16 @@ chrome.runtime.onMessage.addListener(async (message) => {
       }
     }
 
-    if (message.type === "autoResponse" && mode === 3) {
+    if (message.type === "autoResponse") {
+      clearPendingTimer();
       removeBanner();
+      if (mode !== 3) return;
+
       if (!message?.payload?.success) {
         showBanner(
           message?.payload?.error || "❌ Failed to get suggestion from AI."
         );
+        await new Promise((r) => setTimeout(r, 4000));
         removeBanner();
         return;
       }
@@ -538,12 +558,12 @@ async function executeScript() {
 
     showBanner("Collecting messages, please wait...");
     try {
-      await grabData(30);
+      await grabData(6);
     } catch (err) {
       console.error("❌ grabData failed (overlay still shown):", err);
     }
     removeBanner();
-    await new Promise((r) => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, 600));
 
     if (!document.getElementById("mode-switcher")) {
       await mountOverlay(findTextBox());
@@ -558,13 +578,56 @@ async function executeScript() {
 
 async function autoMode() {
   showBanner("AI is auto-filling, please wait...");
-  if (dataGrabbed === false) await grabData(10);
+  clearPendingTimer();
+  pendingActionTimer = setTimeout(() => {
+    removeBanner();
+    showBanner("⏱️ Auto-fill timed out. Please try again.");
+    setTimeout(() => removeBanner(), 4000);
+  }, 30000);
+
+  if (dataGrabbed === false) await grabData(4);
   safeSendMessage({ type: "autoFill" });
 }
 
 async function suggestMode() {
   showBanner("Please wait, getting suggestion...");
-  if (dataGrabbed === false) await grabData(10);
+  clearPendingTimer();
+  pendingActionTimer = setTimeout(() => {
+    removeBanner();
+    const textBox = document.getElementById(idItems.textBox);
+    const mainCard = textBox?.closest("." + classItems.mainCard);
+    if (!mainCard) return;
+    let card = document.getElementById("ai-suggestion-card");
+    if (!card) {
+      card = document.createElement("div");
+      card.id = "ai-suggestion-card";
+      card.style.cssText = `
+        width: 100%;
+        background: #fff0f0;
+        border: 1px solid #f5c6cb;
+        border-radius: 6px;
+        padding: 6px;
+        font-family: monospace;
+        font-size: 14px;
+        display: flex;
+        flex-direction: column;
+        overflow-y: auto;
+        max-height: 140px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+      `;
+      const modeButtons = document.getElementById("mode-switcher");
+      if (modeButtons) mainCard.insertBefore(card, modeButtons);
+      else mainCard.appendChild(card);
+    }
+    card.innerHTML = `
+      <div style="color: #c00; font-weight: bold; margin-bottom: 4px;">⚠️ Request Timed Out</div>
+      <div style="color: #333;">The extension background service took too long to reply. Check your OpenAI API key in Popup Settings and try again.</div>
+    `;
+    card.style.background = "#fff0f0";
+    card.style.borderColor = "#f5c6cb";
+  }, 30000);
+
+  if (dataGrabbed === false) await grabData(4);
   safeSendMessage({ type: "getSuggestion" });
 }
 
@@ -636,73 +699,101 @@ async function learn2(text = null) {
   }
 }
 
+function extractTimelineTimestamp(headingText) {
+  if (!headingText) return 0;
+  const clean = headingText.replace(/#[0-9]+/g, "").replace(/by another agent.*/i, "").trim();
+  const match = clean.match(/(\d{1,4}[-./]\d{1,2}[-./]\d{1,4}(?:[,\s]+\d{1,2}:\d{2}(?::\d{2})?(?:\s*[AaPp][Mm])?)?)/);
+  if (match) {
+    const ts = Date.parse(match[1]);
+    if (!isNaN(ts)) return ts;
+  }
+  const directTs = Date.parse(clean);
+  if (!isNaN(directTs)) return directTs;
+  return 0;
+}
+
 async function grabData(limit = 4) {
   let previousHeight = 0;
 
   for (let i = 0; i < limit; i++) {
     const currentHeight = document.body.scrollHeight;
-    if (currentHeight === previousHeight && i <= 2) break;
+    if (i > 0 && currentHeight === previousHeight) break;
     previousHeight = currentHeight;
     window.scrollTo({ top: currentHeight, behavior: "smooth" });
 
     let waited = 0;
     while (
       document.querySelector(".alert.alert-info.text-center") &&
-      waited < 5000
+      waited < 3000
     ) {
       await new Promise((r) => setTimeout(r, 200));
-      waited += 500;
+      waited += 200;
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    await new Promise((r) => setTimeout(r, 400));
   }
 
   window.scrollTo({ top: 0 });
 
-  let data = [];
-  let currentMessage = [];
-
-  const headingEls = document.querySelectorAll("li.ng-star-inserted .timeline-heading");
-  const latestMessageDate = headingEls.length > 0
-    ? (headingEls[headingEls.length - 1]?.innerText || "").trim()
-    : "";
-  await setToChromeStorage("latestMessageDate", latestMessageDate);
-  await setToChromeStorage("botNow", new Date().toString());
-
   const timelineItems = document.querySelectorAll("li.ng-star-inserted");
+  const parsedItems = [];
+
   timelineItems.forEach((li) => {
-    // Find the message body within this list item
     const body = li.querySelector(".timeline-body");
     if (!body) return;
 
     const text = body.innerText?.trim();
-    if (!text) return; // Skip empty text
+    if (!text) return;
 
-    // Agents have 'timeline-inverted', Customers do not.
-    if (li.classList.contains("timeline-inverted")) {
-      data.push(`You: ${text}`);
-    } else {
-      data.push(`Customer: ${text}`);
-    }
+    const heading = (li.querySelector(".timeline-heading")?.innerText || "").trim();
+    const isAgent = li.classList.contains("timeline-inverted");
+
+    parsedItems.push({
+      role: isAgent ? "You" : "Customer",
+      text,
+      heading,
+      timestamp: extractTimelineTimestamp(heading),
+    });
   });
 
-  // Extract latest customer message directly from the end of timeline data
-  let latestUser = "";
-  const lastCustomerLine = data.slice().reverse().find((line) => /^Customer:\s*/i.test(line));
-  if (lastCustomerLine) {
-    latestUser = lastCustomerLine.replace(/^Customer:\s*/i, "").trim();
-  } else {
-    const customerBodies = document.querySelectorAll(
-      "li.ng-star-inserted:not(.timeline-inverted) .timeline-body"
-    );
-    if (customerBodies.length > 0) {
-      latestUser = customerBodies[customerBodies.length - 1]?.innerText?.trim() || "";
+  // Determine chronological direction (newest-first vs oldest-first)
+  const itemsWithTs = parsedItems.filter((p) => p.timestamp > 0);
+  let isNewestFirst = true; // Default for agents.moderationinterface.com (composer at top)
+  if (itemsWithTs.length >= 2) {
+    const firstTs = itemsWithTs[0].timestamp;
+    const lastTs = itemsWithTs[itemsWithTs.length - 1].timestamp;
+    if (firstTs !== lastTs) {
+      isNewestFirst = firstTs > lastTs;
     }
   }
 
-  currentMessage.push({
-    role: "user",
-    content: latestUser || "",
-  });
+  let latestUser = "";
+  let latestMessageDate = "";
+  let chronologicalItems = [];
+
+  if (isNewestFirst) {
+    // Newest is at the top of the DOM (e.g. agents.moderationinterface.com)
+    const latestCustomerItem = parsedItems.find((p) => p.role === "Customer");
+    latestUser = latestCustomerItem?.text || "";
+    latestMessageDate = itemsWithTs[0]?.heading || parsedItems[0]?.heading || "";
+    chronologicalItems = parsedItems.slice().reverse();
+  } else {
+    // Oldest is at top, newest at bottom
+    const latestCustomerItem = parsedItems.slice().reverse().find((p) => p.role === "Customer");
+    latestUser = latestCustomerItem?.text || "";
+    latestMessageDate = itemsWithTs[itemsWithTs.length - 1]?.heading || parsedItems[parsedItems.length - 1]?.heading || "";
+    chronologicalItems = parsedItems.slice();
+  }
+
+  const data = chronologicalItems.map((p) => `${p.role}: ${p.text}`);
+  const currentMessage = [
+    {
+      role: "user",
+      content: latestUser || "",
+    },
+  ];
+
+  await setToChromeStorage("latestMessageDate", latestMessageDate);
+  await setToChromeStorage("botNow", new Date().toString());
 
   // data2 is passed to processPersonals — do NOT push latestUser twice
   const data2 = data.slice();
