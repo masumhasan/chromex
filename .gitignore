@@ -28,3 +28,14 @@ src/App copy.jsx
 *.njsproj
 *.sln
 *.sw?
+
+# Local Secrets
+.key
+*.key
+.env
+.env.*
+dist.zip
+
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat

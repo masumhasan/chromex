@@ -9,11 +9,13 @@
         "tabs",
         "activeTab",
         "webRequest"
-   
     ],
     "host_permissions": [
         "https://chat.freedomgpt.com/*",
-        "https://agents.moderationinterface.com/*"
+        "https://agents.moderationinterface.com/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "file:///*"
     ],
     "background": {
         "service_worker": "background.js",
@@ -23,7 +25,10 @@
         {
             "matches": [
                 "https://agents.moderationinterface.com/*",
-                "https://chat.freedomgpt.com/*"
+                "https://chat.freedomgpt.com/*",
+                "http://localhost/*",
+                "http://127.0.0.1/*",
+                "file:///*"
             ],
             "js": [
                 "content.js"
