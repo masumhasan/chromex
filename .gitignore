@@ -19,7 +19,6 @@ dist-ssr
 src/App copy.jsx
 
 # Editor directories and files
-.vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
@@ -32,7 +31,6 @@ src/App copy.jsx
 # Local Secrets
 .key
 *.key
-.env
-.env.*
 dist.zip
 
+config.bat

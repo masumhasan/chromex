@@ -52,12 +52,22 @@ const getItem = async (key) => {
 };
 // -----------------------
 
-let client = null;
-
 // --------------------
 // 💰 PRICING CONSTANTS (Per 1M tokens USD)
 // --------------------
 const PRICING_MAP = {
+  // OpenRouter models (USD per 1M tokens)
+  "deepseek/deepseek-chat": { input: 0.14, output: 0.28 },
+  "deepseek/deepseek-r1": { input: 0.55, output: 2.19 },
+  "meta-llama/llama-3.3-70b-instruct": { input: 0.12, output: 0.30 },
+  "x-ai/grok-2-1212": { input: 2.0, output: 10.0 },
+  "anthropic/claude-3.5-haiku": { input: 0.8, output: 4.0 },
+  "anthropic/claude-3.5-sonnet": { input: 3.0, output: 15.0 },
+  "openai/gpt-4o-mini": { input: 0.15, output: 0.60 },
+  "openai/gpt-4o": { input: 2.5, output: 10.0 },
+  "mistralai/mistral-large-2411": { input: 2.0, output: 6.0 },
+
+  // Direct Grok & OpenAI models
   "gpt-5.4": { input: 2.5, output: 15.0 },
   "gpt-5-mini": { input: 0.25, output: 2.0 },
   "gpt-5-nano": { input: 0.05, output: 0.4 },
@@ -66,10 +76,9 @@ const PRICING_MAP = {
   "grok-4.20-reasoning": { input: 5.0, cachedInput: 1.25, output: 15.0 },
   "gpt-5.2": { input: 1.75, output: 14.0 },
   "gpt-5.3-chat-latest": { input: 1.75, output: 14.0 },
-
   "gpt-4.1": { input: 2.0, output: 8.0 },
 
-  default: { input: 1.25, output: 10.0 },
+  default: { input: 0.20, output: 0.80 },
 };
 
 // --------------------
@@ -151,11 +160,89 @@ function pickRandomN(arr, n) {
 // 🧼 Helpers
 // --------------------
 function safeJsonParse(s) {
+  if (!s || typeof s !== "string") return null;
   try {
-    return JSON.parse(s);
+    return JSON.parse(s.trim());
   } catch {
-    return null;
+    try {
+      const cleaned = s
+        .replace(/```json\s*/gi, "")
+        .replace(/```\s*$/gi, "")
+        .trim();
+      return JSON.parse(cleaned);
+    } catch {
+      const match = s.match(/\{[\s\S]*\}/);
+      if (match) {
+        try {
+          return JSON.parse(match[0]);
+        } catch {
+          return null;
+        }
+      }
+      return null;
+    }
   }
+}
+
+async function getLlmConfig() {
+  const openrouterKey = (await getFromChromeStorage("openrouterKey"))?.trim();
+  const grokKey = (await getFromChromeStorage("grokKey"))?.trim();
+  const openAiKey = (await getFromChromeStorage("openai"))?.trim();
+  let selectedModel =
+    (await getFromChromeStorage("openaiModel")) || "deepseek/deepseek-chat";
+
+  // Upgrade default if an OpenRouter key is set but model was left as an old direct GPT model
+  if (openrouterKey && selectedModel.startsWith("gpt-") && !selectedModel.includes("/")) {
+    selectedModel = "deepseek/deepseek-chat";
+  }
+
+  let provider = "openrouter";
+  let activeApiKey = openrouterKey;
+
+  if (openrouterKey) {
+    provider = "openrouter";
+    activeApiKey = openrouterKey;
+  } else if (openAiKey && openAiKey.startsWith("sk-or-")) {
+    provider = "openrouter";
+    activeApiKey = openAiKey;
+  } else if (selectedModel.toLowerCase().includes("grok") && !selectedModel.includes("/") && grokKey) {
+    provider = "grok";
+    activeApiKey = grokKey;
+  } else if (openAiKey) {
+    provider = "openai";
+    activeApiKey = openAiKey;
+  } else if (grokKey) {
+    provider = "grok";
+    activeApiKey = grokKey;
+  }
+
+  let clientInstance = null;
+  if (activeApiKey) {
+    if (provider === "openrouter") {
+      clientInstance = new OpenAI({
+        apiKey: activeApiKey,
+        baseURL: "https://openrouter.ai/api/v1",
+        defaultHeaders: {
+          "HTTP-Referer": "https://moderationinterface.com",
+          "X-Title": "Ai Chat Automation",
+        },
+      });
+    } else if (provider === "grok") {
+      clientInstance = new OpenAI({
+        apiKey: activeApiKey,
+        baseURL: "https://api.x.ai/v1",
+      });
+    } else {
+      clientInstance = new OpenAI({ apiKey: activeApiKey });
+    }
+  }
+
+  return {
+    provider,
+    activeApiKey,
+    selectedModel,
+    client: clientInstance,
+  };
 }
 
 function clampTag(tag) {
@@ -447,17 +534,20 @@ async function processPersonalsWithAI({ data, conversationHistory }) {
     };
   }
 
-  const apiKey = (await getFromChromeStorage("openai"))?.trim();
-  if (!apiKey) {
-    const msg =
-      "Missing OpenAI API key. Open the extension popup → Settings and paste your key.";
-    await logError("Missing OpenAI API Key (processPersonals)", msg);
+  const { provider, activeApiKey, selectedModel, client: llmClient } =
+    await getLlmConfig();
+
+  if (!activeApiKey || !llmClient) {
+    const providerName =
+      provider === "openrouter"
+        ? "OpenRouter"
+        : provider === "grok"
+          ? "Grok"
+          : "OpenAI";
+    const msg = `Missing ${providerName} API key. Open the extension popup → Settings and paste your key.`;
+    await logError(`Missing ${providerName} API Key (processPersonals)`, msg);
     return { success: false, error: msg };
   }
-
-  const selectedModel =
-    (await getFromChromeStorage("openaiModel")) || "gpt-5.1";
-  if (!client) client = new OpenAI({ apiKey });
 
   // Existing textbox strings (baseline)
   const existingCustomerText = normalizeStr(data?.customerPersonal || "");
@@ -715,15 +805,41 @@ ${history.slice().join("\n")}
 `.trim();
 
   try {
-    const resp = await client.chat.completions.create({
-      model: selectedModel,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      response_format: { type: "json_schema", json_schema: RESPONSE_SCHEMA },
-      max_completion_tokens: 1200,
-    });
+    let resp;
+    try {
+      resp = await llmClient.chat.completions.create({
+        model: selectedModel,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        response_format: { type: "json_schema", json_schema: RESPONSE_SCHEMA },
+        max_completion_tokens: 1200,
+      });
+    } catch (schemaErr) {
+      console.warn("⚠️ json_schema not supported by model, trying json_object fallback:", schemaErr?.message);
+      try {
+        resp = await llmClient.chat.completions.create({
+          model: selectedModel,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          response_format: { type: "json_object" },
+          max_completion_tokens: 1200,
+        });
+      } catch (objErr) {
+        console.warn("⚠️ json_object failed, trying plain completion:", objErr?.message);
+        resp = await llmClient.chat.completions.create({
+          model: selectedModel,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          max_completion_tokens: 1200,
+        });
+      }
+    }
 
     const raw = resp?.choices?.[0]?.message?.content || "";
     const parsed = safeJsonParse(raw);
@@ -898,15 +1014,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // ✅ MAIN GPT chat (suggest/auto)
 // --------------------
 async function gptChat() {
-  const apiKey = (await getFromChromeStorage("openai"))?.trim();
-  const grokKey = (await getFromChromeStorage("grokKey"))?.trim();
-  const selectedModel =
-    (await getFromChromeStorage("openaiModel")) || "gpt-5.1";
-  const isGrok = selectedModel.toLowerCase().includes("grok");
-  const activeApiKey = isGrok ? grokKey : apiKey;
+  const { provider, activeApiKey, selectedModel, client: llmClient } =
+    await getLlmConfig();
 
-  if (!activeApiKey) {
-    const providerName = isGrok ? "Grok" : "OpenAI";
+  if (!activeApiKey || !llmClient) {
+    const providerName =
+      provider === "openrouter"
+        ? "OpenRouter"
+        : provider === "grok"
+          ? "Grok"
+          : "OpenAI";
     const msg = `Missing ${providerName} API key. Open the extension popup → Settings and paste your key.`;
     await logError(`Missing ${providerName} API Key`, msg);
     return { success: false, message: "", error: msg };
@@ -1236,14 +1353,7 @@ ${customerPersonal || "(none)"}
   };
   await savePromptLedger(promptLedger);
 
-  if (!activeApiKey) {
-    const providerName = isGrok ? "Grok" : "OpenAI";
-    const msg = `Missing ${providerName} API key. Open the extension popup → Settings and paste your key.`;
-    await logError(`Missing ${providerName} API Key`, msg);
-    return { success: false, message: "", error: msg };
-  }
-
-  console.log(`🧠 Using ${isGrok ? "Grok" : "OpenAI"} Model:`, selectedModel);
+  console.log(`🧠 Using ${provider.toUpperCase()} Model:`, selectedModel);
 
   let activeMessages = messages.filter(
     (m) => m && typeof m.content === "string" && m.content.trim(),
@@ -1256,43 +1366,10 @@ ${customerPersonal || "(none)"}
     }
   }
 
-  let requestPayload;
-
-  if (isGrok) {
-    // --------------------
-    // 🌌 GROK SETUP
-    // --------------------
-    client = new OpenAI({
-      apiKey: activeApiKey,
-      baseURL: "https://api.x.ai/v1", // Route to xAI servers
-    });
-
-    requestPayload = {
-      model: selectedModel,
-      // Grok rejects the "instructions" parameter.
-      // The system prompt MUST be the first message in the input array.
-      input: [{ role: "system", content: finalSystemMessage }, ...activeMessages],
- 
-      store: false, // Ensure highly explicit chats are NOT saved on xAI servers
-    };
-  } else {
-    // --------------------
-    // 🤖 OPENAI SETUP
-    // --------------------
-    client = new OpenAI({ apiKey: activeApiKey });
-
-    requestPayload = {
-      model: selectedModel,
-      input: [...activeMessages],
-      store: false,
-      instructions: finalSystemMessage, // OpenAI uses the instructions parameter
-      max_output_tokens: 8000,
-    };
-  }
-
   // Common Model Settings
   const restrictedSubstrings = [
     "reasoning",
+    "r1",
     "nano",
     "o1",
     "o3",
@@ -1304,17 +1381,64 @@ ${customerPersonal || "(none)"}
     selectedModel.toLowerCase().includes(sub),
   );
 
-  if (!isRestrictedModel) requestPayload.temperature = 0.7;
-
   // --------------------
   // 🚀 EXECUTE API CALL
   // --------------------
   let chatCompletion;
   try {
-    chatCompletion = await client.responses.create(requestPayload);
+    if (provider === "openrouter") {
+      const payload = {
+        model: selectedModel,
+        messages: [
+          { role: "system", content: finalSystemMessage },
+          ...activeMessages,
+        ],
+        max_tokens: 1000,
+      };
+      if (!isRestrictedModel) payload.temperature = 0.7;
+      chatCompletion = await llmClient.chat.completions.create(payload);
+    } else if (provider === "grok") {
+      const payload = {
+        model: selectedModel,
+        input: [{ role: "system", content: finalSystemMessage }, ...activeMessages],
+        store: false,
+      };
+      if (!isRestrictedModel) payload.temperature = 0.7;
+
+      try {
+        chatCompletion = await llmClient.responses.create(payload);
+      } catch (grokErr) {
+        console.warn("⚠️ Grok responses.create failed, falling back to chat.completions:", grokErr?.message);
+        chatCompletion = await llmClient.chat.completions.create({
+          model: selectedModel,
+          messages: [
+            { role: "system", content: finalSystemMessage },
+            ...activeMessages,
+          ],
+          max_tokens: 1000,
+          ...((!isRestrictedModel) ? { temperature: 0.7 } : {}),
+        });
+      }
+    } else {
+      const payload = {
+        model: selectedModel,
+        input: [...activeMessages],
+        store: false,
+        instructions: finalSystemMessage,
+        max_output_tokens: 8000,
+      };
+      if (!isRestrictedModel) payload.temperature = 0.7;
+      chatCompletion = await llmClient.responses.create(payload);
+    }
   } catch (apiError) {
+    const providerName =
+      provider === "openrouter"
+        ? "OpenRouter"
+        : provider === "grok"
+          ? "Grok"
+          : "OpenAI";
     await logError(
-      `${isGrok ? "Grok" : "OpenAI"} API Request Failed`,
+      `${providerName} API Request Failed`,
       apiError?.message || String(apiError),
     );
     return {
@@ -1334,7 +1458,7 @@ ${customerPersonal || "(none)"}
     reply = chatCompletion?.choices?.[0]?.message?.content || "";
   }
   const refusal = chatCompletion.error;
-  console.log("🤖 AI Reply:", chatCompletion);
+  console.log("🤖 AI Reply:", reply || chatCompletion);
 
   if (reply && typeof reply === "string" && reply.trim()) {
     try {
@@ -1371,13 +1495,17 @@ ${customerPersonal || "(none)"}
      // Non-cached tokens are whatever is left over
      const uncachedTks = Math.max(0, inputTks - cachedTks);
 
-     // Calculate costs using the discounted cached rate if available
-     const cachedInputCost =
-       (cachedTks / 1_000_000) * (pricing.cachedInput || pricing.input);
-     const uncachedInputCost = (uncachedTks / 1_000_000) * pricing.input;
-     const outputCost = (outputTks / 1_000_000) * pricing.output;
-
-     const totalCost = cachedInputCost + uncachedInputCost + outputCost;
+     let totalCost;
+     if (typeof usage.cost === "number" && usage.cost > 0) {
+       totalCost = usage.cost;
+     } else {
+       // Calculate costs using the discounted cached rate if available
+       const cachedInputCost =
+         (cachedTks / 1_000_000) * (pricing.cachedInput || pricing.input);
+       const uncachedInputCost = (uncachedTks / 1_000_000) * pricing.input;
+       const outputCost = (outputTks / 1_000_000) * pricing.output;
+       totalCost = cachedInputCost + uncachedInputCost + outputCost;
+     }
 
      const usageStats = {
        model: selectedModel,
@@ -1385,7 +1513,7 @@ ${customerPersonal || "(none)"}
        cachedTokens: cachedTks, // Good to log this so you can see caching work!
        completionTokens: outputTks,
        totalTokens: totalTks,
-       cost: totalCost.toFixed(6),
+       cost: Number(totalCost).toFixed(6),
        timestamp: new Date().toISOString(),
      };
 
