@@ -621,7 +621,7 @@ async function suggestMode() {
     }
     card.innerHTML = `
       <div style="color: #c00; font-weight: bold; margin-bottom: 4px;">⚠️ Request Timed Out</div>
-      <div style="color: #333;">The extension background service took too long to reply. Check your OpenAI API key in Popup Settings and try again.</div>
+      <div style="color: #333;">The extension background service took too long to reply. Check your API key in Popup Settings and try again.</div>
     `;
     card.style.background = "#fff0f0";
     card.style.borderColor = "#f5c6cb";

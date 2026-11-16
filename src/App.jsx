@@ -111,6 +111,30 @@ export const Label = memo(function Label({ children }) {
   );
 });
 
+const OPENROUTER_MODELS = [
+  { value: "deepseek/deepseek-chat", label: "DeepSeek V3 (Recommended - Low Cost)" },
+  { value: "deepseek/deepseek-r1", label: "DeepSeek R1 (Reasoning)" },
+  { value: "meta-llama/llama-3.3-70b-instruct", label: "Llama 3.3 70B Instruct" },
+  { value: "x-ai/grok-2-1212", label: "Grok 2 (OpenRouter)" },
+  { value: "anthropic/claude-3.5-haiku", label: "Claude 3.5 Haiku" },
+  { value: "openai/gpt-4o-mini", label: "GPT-4o Mini (OpenRouter)" },
+  { value: "openai/gpt-4o", label: "GPT-4o (OpenRouter)" },
+  { value: "mistralai/mistral-large-2411", label: "Mistral Large" },
+];
+
+const PRESET_MODELS = [
+  ...OPENROUTER_MODELS.map((m) => m.value),
+  "grok-4.20-reasoning",
+  "grok-4.20",
+  "gpt-5.4",
+  "gpt-5.3-chat-latest",
+  "gpt-5.2",
+  "gpt-5.1",
+  "gpt-5-mini",
+  "gpt-5-nano",
+  "gpt-4.1",
+];
+
 export const TabBtn = memo(function TabBtn({ label, active, onClick }) {
   return (
     <button
@@ -236,12 +260,11 @@ Be natural, spontaneous, sensual, and engaging. Never repeat introductions or lo
   );
 
   // APIs & Models
-  const [openaiModel, setOpenaiModel] = useState("gpt-5.4");
-  const [openAi, setOpenAiKey] = useState(
-    "",
-  );
-  const [grokKey, setGrokKey] =
-    useState(``);
+  const [openaiModel, setOpenaiModel] = useState("deepseek/deepseek-chat");
+  const [openrouterKey, setOpenrouterKey] = useState("");
+  const [openAi, setOpenAiKey] = useState("");
+  const [grokKey, setGrokKey] = useState("");
+  const [isCustomModel, setIsCustomModel] = useState(false);
 
   // Stats + Errors
   const [stats, setStats] = useState(null);
@@ -320,6 +343,7 @@ Be natural, spontaneous, sensual, and engaging. Never repeat introductions or lo
       [
         "system",
         "openaiModel",
+        "openrouterKey",
         "openai",
         "grokKey",
         "lastUsageStats",
@@ -341,7 +365,13 @@ Be natural, spontaneous, sensual, and engaging. Never repeat introductions or lo
       ],
       (result) => {
         if (result.system != null) setText(result.system);
-        if (result.openaiModel != null) setOpenaiModel(result.openaiModel);
+        if (result.openrouterKey != null) setOpenrouterKey(result.openrouterKey);
+        if (result.openaiModel != null) {
+          setOpenaiModel(result.openaiModel);
+          if (!PRESET_MODELS.includes(result.openaiModel)) {
+            setIsCustomModel(true);
+          }
+        }
         if (result.openai != null) setOpenAiKey(result.openai);
         if (result.grokKey != null) setGrokKey(result.grokKey);
 
@@ -421,10 +451,11 @@ Be natural, spontaneous, sensual, and engaging. Never repeat introductions or lo
 
     await chromeSet({
       system: text,
-      openaiModel,
-      openai: openAi,
-      grokKey: grokKey,
-      model: "openai",
+      openaiModel: openaiModel.trim(),
+      openrouterKey: openrouterKey.trim(),
+      openai: openAi.trim(),
+      grokKey: grokKey.trim(),
+      model: "openrouter",
 
       learnExamplesLimit,
       triggerLearnExamplesLimit,
@@ -625,49 +656,89 @@ Be natural, spontaneous, sensual, and engaging. Never repeat introductions or lo
               <Card title="API Keys & Model">
                 <div className="flex flex-col gap-3">
                   <div>
-                    <Label>OpenAI API Key</Label>
+                    <Label>OpenRouter API Key (Recommended)</Label>
                     <Input
                       type="password"
-                      placeholder="sk-..."
-                      value={openAi}
-                      onChange={(e) => setOpenAiKey(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <Label>Grok API Key</Label>
-                    <Input
-                      type="password"
-                      placeholder="xai-..."
-                      value={grokKey}
-                      onChange={(e) => setGrokKey(e.target.value)}
+                      placeholder="sk-or-v1-..."
+                      value={openrouterKey}
+                      onChange={(e) => setOpenrouterKey(e.target.value)}
                     />
                   </div>
 
                   <div>
                     <Label>Model</Label>
                     <Select
-                      value={openaiModel}
-                      onChange={(e) => setOpenaiModel(e.target.value)}
+                      value={isCustomModel ? "custom" : openaiModel}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        if (val === "custom") {
+                          setIsCustomModel(true);
+                        } else {
+                          setIsCustomModel(false);
+                          setOpenaiModel(val);
+                        }
+                      }}
                     >
-                      <optgroup label="Grok (xAI)">
+                      <optgroup label="OpenRouter (Recommended)">
+                        {OPENROUTER_MODELS.map((m) => (
+                          <option key={m.value} value={m.value}>
+                            {m.label}
+                          </option>
+                        ))}
+                        <option value="custom">Custom OpenRouter Model ID...</option>
+                      </optgroup>
+                      <optgroup label="Grok (Direct xAI)">
                         <option value="grok-4.20-reasoning">
                           grok-4.20-reasoning
                         </option>
                         <option value="grok-4.20">grok-4.20</option>
                       </optgroup>
-                      <optgroup label="GPT-5">
+                      <optgroup label="OpenAI (Direct)">
                         <option value="gpt-5.4">gpt-5.4</option>
                         <option value="gpt-5.3-chat-latest">gpt-5.3</option>
                         <option value="gpt-5.2">gpt-5.2</option>
                         <option value="gpt-5.1">gpt-5.1</option>
-
                         <option value="gpt-5-mini">gpt-5-mini</option>
                         <option value="gpt-5-nano">gpt-5-nano</option>
-                      </optgroup>
-                      <optgroup label="GPT 4">
                         <option value="gpt-4.1">gpt-4.1</option>
                       </optgroup>
                     </Select>
+
+                    {isCustomModel && (
+                      <div className="mt-2">
+                        <Label>Custom Model Identifier</Label>
+                        <Input
+                          type="text"
+                          placeholder="e.g. qwen/qwen-2.5-72b-instruct"
+                          value={openaiModel}
+                          onChange={(e) => setOpenaiModel(e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="border-t border-gray-100 pt-3 mt-1 flex flex-col gap-3">
+                    <div className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">
+                      Legacy / Direct API Keys (Optional)
+                    </div>
+                    <div>
+                      <Label>Grok API Key</Label>
+                      <Input
+                        type="password"
+                        placeholder="xai-..."
+                        value={grokKey}
+                        onChange={(e) => setGrokKey(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <Label>OpenAI API Key</Label>
+                      <Input
+                        type="password"
+                        placeholder="sk-..."
+                        value={openAi}
+                        onChange={(e) => setOpenAiKey(e.target.value)}
+                      />
+                    </div>
                   </div>
                 </div>
               </Card>

@@ -1,7 +1,7 @@
 {
     "manifest_version": 3,
-    "name": "Ai Chat Automation (Grok Update)",
-    "version": "5.0",
+    "name": "Ai Chat Automation (OpenRouter Update)",
+    "version": "5.1",
     "description": "AI chat bot",
     "permissions": [
         "storage",
@@ -11,6 +11,9 @@
         "webRequest"
     ],
     "host_permissions": [
+        "https://openrouter.ai/*",
+        "https://api.x.ai/*",
+        "https://api.openai.com/*",
         "https://chat.freedomgpt.com/*",
         "https://agents.moderationinterface.com/*",
         "http://localhost/*",
